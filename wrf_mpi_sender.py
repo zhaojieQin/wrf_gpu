@@ -102,11 +102,9 @@ class WRFMPISender:
             # JAX → CuPy（显式拷贝，避免 GH200 共享内存下 DLPack 生命周期问题）
             cp_arr = cp.array(jax_arr)
 
-            # 分配 pinned host memory（使用 CuPy 的高层接口）
-            host_buf = cp.empty_pinned(cp_arr.shape, dtype=cp_arr.dtype)
-
-            # GPU → Host（同步传输，返回时数据已在 host）
-            cp_arr.get(out=host_buf)
+            # GPU → Host（使用标准 NumPy array）
+            # 注意：没有使用 pinned memory，但对于 ~7MB 数据性能损失可接受
+            host_buf = cp.asnumpy(cp_arr)
 
             # MPI Isend（非阻塞发送）
             data_tag = coupling_step * 1000 + field_idx + 1
@@ -120,10 +118,10 @@ class WRFMPISender:
     def wait_all(self) -> None:
         """等待所有 pending 发送完成并释放资源
 
-        关键：显式释放 pinned memory，避免泄漏
+        关键：显式释放内存，避免泄漏
         - 每段 ~240 MB，20 段/小时 × 24 小时 = 115 GB 泄漏
 
-        注意：GH200 架构下 pinned memory 释放行为需要验证
+        注意：使用标准 NumPy array（非 pinned memory）
         """
         for request, host_buf in self.pending_requests:
             try:
@@ -131,8 +129,6 @@ class WRFMPISender:
                 request.Wait()
             finally:
                 # 显式释放资源（即使 Wait 失败也要释放）
-                # cp.empty_pinned() 返回的 NumPy array 会在 del 时自动释放 pinned memory
-                # 需要验证 GH200 上是否真正释放
                 del host_buf
 
         self.pending_requests.clear()
