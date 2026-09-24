@@ -32,6 +32,7 @@ import argparse
 import sys
 from pathlib import Path
 import time
+import os
 
 # 延迟导入（避免无 JAX 环境报错）
 try:
@@ -115,21 +116,26 @@ class CoupledForecast3Min:
         - 每次推进 N_wrf 步（对于 dt=18s，N=10）
         - 返回推进后的 state
         """
+        step_start_time = time.time()
         self.call_count += 1
 
         print(f"\n{'='*70}")
-        print(f"[耦合回调 #{self.call_count}] {'DRY (验证)' if self.dry_run else 'WET (发送)'} 模式")
+        print(f"[耦合回调 #{self.call_count}] 开始时间: {time.strftime('%H:%M:%S')}")
+        print(f"  模式: {'DRY (验证)' if self.dry_run else 'MPI (发送)'}")
         print(f"  累积时间: {self.total_hours:.3f}h → {self.total_hours + hours:.3f}h")
         print(f"  本次推进: {hours*60:.2f} 分钟 ({hours*3600:.0f}s)")
-        print(f"  hours 参数实际值: {hours:.6f}h ({hours*60:.4f} min)")  # ← 新增：打印实际值
         print(f"  预期步数: {self.alignment['n_wrf_steps']} WRF 步")
+        print(f"{'='*70}")
 
         # ============================================================
         # 1. 提取子域数据
         # ============================================================
         if not self.dry_run:
-            print(f"  提取 3D 子域...")
+            t0 = time.time()
+            print(f"\n[步骤 1/4] 提取 3D 子域...")
             subdomain_data = self._extract_subdomain(state)
+            t1 = time.time()
+            print(f"  ✓ 提取完成 ({t1-t0:.2f}s)")
 
             # 打印统计信息（触发 GPU 同步）
             for name, arr in subdomain_data.items():
@@ -141,31 +147,42 @@ class CoupledForecast3Min:
             # ============================================================
             # 2. 发送到 LBM
             # ============================================================
-            print(f"  发送到 LBM rank 1...")
+            t0 = time.time()
+            print(f"\n[步骤 2/4] 发送到 LBM rank 1...")
             self._send_to_lbm(subdomain_data, self.call_count)
-            print(f"  ✓ 发送完成")
+            t1 = time.time()
+            print(f"  ✓ 发送完成 ({t1-t0:.2f}s)")
         else:
-            print(f"  [DRY] 跳过子域提取和发送")
+            print(f"\n[步骤 1-2/4] [DRY] 跳过子域提取和发送")
 
         # ============================================================
         # 3. 调用真实预报（分段编译模式）
         # ============================================================
-        print(f"  调用真实预报（分段编译）...")
+        t0 = time.time()
+        print(f"\n[步骤 3/4] 调用 WRF 预报...")
+        sys.stdout.flush()  # 强制刷新输出
 
         from gpuwrf.integration.daily_pipeline import _segmented_forecast_fn
         result = _segmented_forecast_fn(state, namelist, hours)
 
-        print(f"  ✓ 预报完成")
+        t1 = time.time()
+        print(f"  ✓ 预报完成 ({t1-t0:.2f}s)")
 
         # ============================================================
         # 4. 等待 MPI 发送完成（选项 B - WRF 计算后等待）
         # ============================================================
         if not self.dry_run:
-            print(f"  等待 MPI 发送完成...")
+            t0 = time.time()
+            print(f"\n[步骤 4/4] 等待 MPI 发送完成...")
             self.mpi_sender.wait_all()
-            print(f"  ✓ MPI 发送完成")
+            t1 = time.time()
+            print(f"  ✓ MPI 发送完成 ({t1-t0:.2f}s)")
 
+        # 总耗时
+        step_elapsed = time.time() - step_start_time
+        print(f"\n本步总耗时: {step_elapsed:.2f}s")
         print(f"{'='*70}\n")
+        sys.stdout.flush()  # 强制刷新输出
 
         # ============================================================
         # 4. 记录历史
@@ -418,12 +435,15 @@ def main():
     # 3. 导入 gpuwrf
     # =====================================================
     print(f"\n[3/5] 导入 gpuwrf...")
+    t0 = time.time()
 
     try:
         from gpuwrf.integration.daily_pipeline import (
             execute_daily_pipeline,
             DailyPipelineConfig,
         )
+        t1 = time.time()
+        print(f"  ✓ 导入完成 ({t1-t0:.2f}s)")
     except ImportError as e:
         print(f"❌ 错误：无法导入 gpuwrf: {e}", file=sys.stderr)
         sys.exit(1)
@@ -468,6 +488,10 @@ def main():
     # 5. 执行
     # =====================================================
     print(f"\n[5/5] 执行耦合测试...")
+    print(f"{'='*70}")
+    print(f"开始时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"预期总耦合步数: ~{hours * 60 / alignment['actual_coupling_minutes']:.0f} 步")
+    print(f"每步推进: {alignment['actual_coupling_minutes']:.1f} 分钟")
     print(f"{'='*70}\n")
 
     start_time = time.time()
