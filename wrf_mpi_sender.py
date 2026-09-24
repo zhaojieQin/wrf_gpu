@@ -15,7 +15,12 @@ WRF → LBM MPI 通信发送端
 from mpi4py import MPI
 import cupy as cp
 import numpy as np
-from jax.dlpack import to_dlpack
+try:
+    from jax.dlpack import to_dlpack
+except ImportError:
+    # JAX 新版本 API 变更
+    from jax import dlpack as jax_dlpack
+    to_dlpack = lambda x: jax_dlpack.to_dlpack(x)
 
 
 class WRFMPISender:

@@ -28,54 +28,57 @@
 LAUNCHER=???  # 待用户测试后填写：mpprun / srun / mpiexec.hydra
 
 # ============================================================
-# 候选方案 1: mpprun（Arrhenius 推荐）
+# Option 1: mpprun (Arrhenius recommended)
 # ============================================================
-# 适用：如果 mpprun 支持 Python 脚本
-# 取消注释使用：
+# Usage: if mpprun supports Python scripts
+# Uncomment to use:
 #
 # $LAUNCHER -n 2 bash -c '
+#     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 #     if [ $SLURM_PROCID -eq 0 ]; then
 #         export CUDA_VISIBLE_DEVICES=0
-#         cd /home/qzj/code/WRFGPUTest/wrf_gpu
+#         cd "$SCRIPT_DIR"
 #         python test_wrf_sender.py
 #     elif [ $SLURM_PROCID -eq 1 ]; then
 #         export CUDA_VISIBLE_DEVICES=1
-#         cd /home/qzj/code/WRFGPUTest/wrf_gpu
+#         cd "$SCRIPT_DIR"
 #         python mock_receiver.py --steps 3
 #     fi
 # '
 
 # ============================================================
-# 候选方案 2: srun（Slurm 标准）
+# Option 2: srun (Slurm standard)
 # ============================================================
-# 适用：标准 Slurm 集群
-# 取消注释使用：
+# Usage: standard Slurm cluster
+# Uncomment to use:
 #
 # srun --ntasks=2 bash -c '
+#     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 #     if [ $SLURM_PROCID -eq 0 ]; then
 #         export CUDA_VISIBLE_DEVICES=0
-#         cd /home/qzj/code/WRFGPUTest/wrf_gpu
+#         cd "$SCRIPT_DIR"
 #         python test_wrf_sender.py
 #     elif [ $SLURM_PROCID -eq 1 ]; then
 #         export CUDA_VISIBLE_DEVICES=1
-#         cd /home/qzj/code/WRFGPUTest/wrf_gpu
+#         cd "$SCRIPT_DIR"
 #         python mock_receiver.py --steps 3
 #     fi
 # '
 
 # ============================================================
-# 候选方案 3: mpiexec.hydra（MPICH 标准）
+# Option 3: mpiexec.hydra (MPICH standard)
 # ============================================================
-# 适用：非 Slurm 环境或 MPICH 原生启动
-# 取消注释使用：
+# Usage: non-Slurm environment or MPICH native
+# Uncomment to use:
 #
+# SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # mpiexec.hydra -n 1 bash -c "
 #     export CUDA_VISIBLE_DEVICES=0
-#     cd /home/qzj/code/WRFGPUTest/wrf_gpu
+#     cd '$SCRIPT_DIR'
 #     python test_wrf_sender.py
 # " : -n 1 bash -c "
 #     export CUDA_VISIBLE_DEVICES=1
-#     cd /home/qzj/code/WRFGPUTest/wrf_gpu
+#     cd '$SCRIPT_DIR'
 #     python mock_receiver.py --steps 3
 # "
 
