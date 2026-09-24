@@ -3,7 +3,7 @@
 WRF-LBM 3 分钟耦合原型（最干净路径）
 
 设计：
-- 使用 auxhist 配置触发 3 分钟分段
+- 使用 coupling_interval_minutes 配置触发 3 分钟分段（无 auxhist 开销）
 - forecast_fn 回调提取边界数据
 - 模拟发送到 LBM（实际发送逻辑待 LBM 接口确认）
 - 不修改 gpuwrf 内部代码
@@ -35,12 +35,13 @@ from coupling_alignment import (
 
 
 class CoupledForecast3Min:
-    """3 分钟耦合原型（基于 auxhist 触发）
+    """3 分钟耦合原型（基于 coupling_interval_minutes 触发）
 
     工作原理：
-    1. 配置 auxhist interval_minutes=3
+    1. 配置 coupling_interval_minutes=3
     2. daily_pipeline 自动按 3 分钟分段调用 forecast_fn
-    3. 每次调用时提取边界数据并发送到 LBM
+    3. 每次调用时提取指定 3D 子域并发送到 LBM
+    4. 无 auxhist 文件写入开销（移除 ~45s/h）
     """
 
     def __init__(
@@ -48,16 +49,61 @@ class CoupledForecast3Min:
         alignment: CouplingAlignment,
         dt_lbm: float,
         dry_run: bool = False,
+        subdomain_config: dict | None = None,
     ):
         """
         Args:
             alignment: 耦合对齐参数（来自 compute_coupling_alignment）
             dt_lbm: LBM 时间步长（秒）
             dry_run: True=验证接口不发送，False=提取并发送
+            subdomain_config: 3D 子域提取配置，支持：
+                {
+                    'z_range': (0, -1),   # 垂直层范围 (start, end)，-1 表示到末尾
+                    'y_range': (0, -1),   # 南北范围 (start, end)，-1 表示到末尾
+                    'x_range': (0, -1),   # 东西范围 (start, end)，-1 表示到末尾
+                    'fields': ['u', 'v', 'w', 'theta', 'qv', 'p'],  # 提取字段
+                }
+                示例 1：提取完整域
+                    {'z_range': (0, -1), 'y_range': (0, -1), 'x_range': (0, -1)}
+                示例 2：提取子域（垂直 10-30 层，南北 20-80，东西 50-150）
+                    {'z_range': (10, 30), 'y_range': (20, 80), 'x_range': (50, 150)}
+
+                默认 None = 完整域的 (u, v, theta, qv)
+                subdomain_config = {
+                        'z_range': (0, -1),
+                        'y_range': (0, -1),
+                        'x_range': (0, -1),
+                        'fields': [
+                            # 3D 字段
+                            'u', 'v', 'w',           # 风场（staggered）
+                            'theta',                  # 位温
+                            'qv',                     # 水汽混合比（如果 LBM 需要湿度）
+                            #'p_total',                # 总压力（如果需要）
+                            # 2D 地表字段（会自动处理维度）
+                            't_skin',                 # TSK：地表温度
+                            'roughness_m',            # ZNT：地表粗糙度
+                        ]
+                    }
         """
         self.alignment = alignment
         self.dt_lbm = dt_lbm
         self.dry_run = dry_run
+        self.boundary_config = subdomain_config or {
+            'z_range': (0, -1),
+            'y_range': (0, -1),
+            'x_range': (0, -1),
+            'fields': [
+                # 3D 风场（staggered grid）
+                'u', 'v', 'w',
+                # 3D 热力学场
+                'theta',         # 位温（LBM 端计算热量平流）
+                'qv',            # 水汽混合比
+                'p_total',       # 总压力（用于密度加权，如果 LBM 需要）
+                # 2D 地表场
+                't_skin',        # TSK: 地表温度
+                'roughness_m',   # ZNT: 地表粗糙度
+            ],
+        }
         self.call_count = 0
         self.total_hours = 0.0
         self.history = []
@@ -127,25 +173,66 @@ class CoupledForecast3Min:
         return result
 
     def _extract_boundary_fields(self, state):
-        """提取边界层字段（占位实现，待 LBM 需求确认）
+        """提取指定的 3D 子域，传送给 LBM 端
 
-        TODO: 待 VirtualFluids 团队确认：
-        - 需要哪些物理量？（u, v, w, T, p, rho, qv...）
-        - 需要哪个边界？（西/东/南/北/顶/底）
-        - 需要边界法向速度还是切向速度？
-        - 需要原始模式变量还是诊断变量？
-        - 数据格式要求？（单位、坐标系）
+        根据 boundary_config 提取完整的 3D 子域（不仅仅是边界面），
+        方便 LBM 端进行插值和嵌套计算。
 
-        当前占位实现：提取西边界（i=0）的基本流场变量
+        配置示例：
+            # 提取完整 3D 子域：垂直 10-30 层，南北 20-80，东西 50-150
+            {
+                'z_range': (10, 30),
+                'y_range': (20, 80),
+                'x_range': (50, 150),
+                'fields': ['u', 'v', 'w', 'theta', 'qv']
+            }
+
+            # 使用 -1 表示到末尾（全域）
+            {
+                'z_range': (0, -1),    # 垂直全域
+                'y_range': (0, -1),    # 南北全域
+                'x_range': (100, 200), # 东西 100-200
+                'fields': ['u', 'v']
+            }
+
+        返回：
+            dict[str, jax.Array]: 字段名 -> 3D 子域数据（保持在 GPU）
+                shape = (nz_sub, ny_sub, nx_sub)
+                例如：z_range=(10,30), y_range=(20,80), x_range=(50,150)
+                      -> shape = (20, 60, 100)
         """
-        # 西边界（最左列）- 占位实现
-        boundary = {
-            'u': state.u[:, :, 0],          # (nz, ny) 东西向风速
-            'v': state.v[:, :, 0],          # (nz, ny) 南北向风速
-            'theta': state.theta[:, :, 0],  # (nz, ny) 位温
-            'qv': state.qv[:, :, 0],        # (nz, ny) 水汽混合比
-        }
-        return boundary
+        cfg = self.boundary_config
+        fields = cfg.get('fields', ['u', 'v', 'theta', 'qv'])
+
+        # 获取 WRF state 的完整形状
+        nz, ny, nx = state.u.shape
+
+        # 解析 3D 子域范围
+        z_start, z_end = cfg.get('z_range', (0, -1))
+        y_start, y_end = cfg.get('y_range', (0, -1))
+        x_start, x_end = cfg.get('x_range', (0, -1))
+
+        # 处理 -1（表示到末尾）
+        if z_end == -1:
+            z_end = nz
+        if y_end == -1:
+            y_end = ny
+        if x_end == -1:
+            x_end = nx
+
+        # 创建切片
+        z_slice = slice(z_start, z_end)
+        y_slice = slice(y_start, y_end)
+        x_slice = slice(x_start, x_end)
+
+        # 提取 3D 子域
+        subdomain = {}
+        for field in fields:
+            if hasattr(state, field):
+                arr = getattr(state, field)
+                subdomain[field] = arr[z_slice, y_slice, x_slice]
+
+        return subdomain
 
     def _send_to_lbm(self, boundary_data, coupling_step):
         """发送边界数据到 LBM（模拟）
@@ -167,7 +254,15 @@ class CoupledForecast3Min:
         total_bytes = sum(v.nbytes for v in boundary_np.values())
         total_mb = total_bytes / 1e6
 
-        print(f"    边界数据: {len(boundary_np)} 个字段, "
+        # 打印子域配置和形状
+        cfg = self.boundary_config
+        print(f"    子域配置: z={cfg.get('z_range', (0, -1))}, "
+              f"y={cfg.get('y_range', (0, -1))}, "
+              f"x={cfg.get('x_range', (0, -1))}")
+        for field, arr in boundary_np.items():
+            print(f"      {field}: shape={arr.shape}, dtype={arr.dtype}")
+
+        print(f"    总数据量: {len(boundary_np)} 个字段, "
               f"{total_elements} 个元素, {total_mb:.2f} MB")
         print(f"    LBM 侧应运行: {self.alignment['m_lbm_steps']} 步 "
               f"(时长 {self.alignment['actual_coupling_s']}s)")
@@ -210,6 +305,19 @@ def main():
   # WET 模式（1h 耦合测试）
   python coupling_prototype_3min.py --wet --hours 1
 
+  # 提取指定 3D 子域（方便 LBM 插值）
+  # 垂直 10-30 层，南北 20-80，东西 50-150
+  python coupling_prototype_3min.py --wet --hours 1 \\
+      --z-range 10:30 --y-range 20:80 --x-range 50:150
+
+  # 提取完整域（全部层，全部范围）
+  python coupling_prototype_3min.py --wet --hours 1 \\
+      --z-range 0:-1 --y-range 0:-1 --x-range 0:-1
+
+  # 自定义提取字段
+  python coupling_prototype_3min.py --wet --hours 1 \\
+      --fields u,v,w,theta,qv,p
+
   # 指定 LBM 时间步
   python coupling_prototype_3min.py --wet --hours 1 --dt-lbm 0.05
         """
@@ -235,6 +343,16 @@ def main():
                        help='LBM 时间步长（秒，默认 0.1，待 VirtualFluids 确认）')
     parser.add_argument('--desired-interval', type=float, default=60.0,
                        help='期望耦合间隔（秒，默认 60.0）')
+
+    # 子域提取配置
+    parser.add_argument('--z-range', type=str, default='0:-1',
+                       help='垂直层范围 start:end，-1 表示到末尾（默认 0:-1 全域）')
+    parser.add_argument('--y-range', type=str, default='0:-1',
+                       help='南北范围 start:end，-1 表示到末尾（默认 0:-1 全域）')
+    parser.add_argument('--x-range', type=str, default='0:-1',
+                       help='东西范围 start:end，-1 表示到末尾（默认 0:-1 全域）')
+    parser.add_argument('--fields', type=str, default='u,v,theta,qv',
+                       help='提取字段，逗号分隔（默认 u,v,theta,qv）')
 
     # 路径参数
     repo_root = Path(__file__).parent
@@ -270,6 +388,20 @@ def main():
     dry_run = args.dry
     hours = args.hours
 
+    # 解析子域配置
+    def parse_range(s):
+        parts = s.split(':')
+        start = int(parts[0])
+        end = int(parts[1]) if len(parts) > 1 else -1
+        return (start, end)
+
+    subdomain_config = {
+        'z_range': parse_range(args.z_range),
+        'y_range': parse_range(args.y_range),
+        'x_range': parse_range(args.x_range),
+        'fields': args.fields.split(','),
+    }
+
     if args.output_dir is None:
         output_dir = repo_root / 'runs' / ('coupling_3min_dry' if dry_run else 'coupling_3min_wet')
     else:
@@ -299,7 +431,6 @@ def main():
             execute_daily_pipeline,
             DailyPipelineConfig,
         )
-        from gpuwrf.io.auxhist_stream import AuxhistStreamConfig
     except ImportError as e:
         print(f"❌ 错误：无法导入 gpuwrf: {e}", file=sys.stderr)
         sys.exit(1)
@@ -314,9 +445,10 @@ def main():
         alignment=alignment,
         dt_lbm=args.dt_lbm,
         dry_run=dry_run,
+        subdomain_config=subdomain_config,
     )
 
-    # 配置 auxhist 触发 3 分钟分段
+    # 使用 coupling_interval_minutes 直接触发分段（无 auxhist 开销）
     config = DailyPipelineConfig(
         run_id=str(input_dir),
         run_root=input_dir.parent,
@@ -324,11 +456,7 @@ def main():
         hours=hours,
         output_dir=output_dir,
         proof_dir=output_dir / "proofs",
-        auxhist=AuxhistStreamConfig(
-            stream_id=1,
-            interval_minutes=alignment['auxhist_interval_minutes'],  # 3 分钟
-            variables=("T2",),  # 最小变量集（减少 auxhist 文件大小）
-        ),
+        coupling_interval_minutes=alignment['auxhist_interval_minutes'],  # 3 分钟
     )
 
     print(f"  输入目录: {input_dir}")
@@ -338,6 +466,10 @@ def main():
     print(f"  耦合间隔: {alignment['actual_coupling_minutes']:.0f} 分钟")
     print(f"  预期 forecast_fn 调用: ~{hours * alignment['substeps']} 次")
     print(f"  模式: {'DRY (验证接口)' if dry_run else 'WET (提取+发送)'}")
+    print(f"  子域配置: z={subdomain_config['z_range']}, "
+          f"y={subdomain_config['y_range']}, "
+          f"x={subdomain_config['x_range']}, "
+          f"fields={subdomain_config['fields']}")
 
     # =====================================================
     # 5. 执行
@@ -373,7 +505,6 @@ def main():
     print(f"Verdict: {verdict}")
     print(f"Wall clock: {elapsed:.1f} s ({elapsed/60:.1f} min)")
     print(f"Output files: {len(result.get('wrfout_files', []))}")
-    print(f"Auxhist files: {len(result.get('auxhist_files', []))}")  # ← 垃圾文件
 
     # 严格验证
     if verdict != 'PIPELINE_GREEN':
@@ -397,6 +528,7 @@ def main():
     print(f"✓ wrfout 文件生成: {len(result.get('wrfout_files', []))} 个")
     print(f"✓ forecast_fn 调用: {coupled.call_count} 次")
     print(f"✓ 耦合间隔: {alignment['actual_coupling_minutes']:.0f} 分钟")
+    print(f"✓ 无 auxhist 文件写入（使用 coupling_interval_minutes）")
 
     if dry_run:
         print(f"\n下一步：运行 WET 模式")
@@ -406,10 +538,6 @@ def main():
         print(f"  1. 确认 LBM 侧接口（边界条件 API、dt_lbm 实测值）")
         print(f"  2. 实现 _send_to_lbm 真实发送逻辑")
         print(f"  3. 运行完整耦合测试（WRF + LBM 双向联调）")
-
-    print(f"\n⚠️  注意：输出目录有 auxhist 垃圾文件（{len(result.get('auxhist_files', []))} 个）")
-    print(f"  位置: {output_dir}/auxhist1_d01_*.nc")
-    print(f"  如需清理: rm -f {output_dir}/auxhist1_d01_*.nc")
 
     sys.exit(0)
 

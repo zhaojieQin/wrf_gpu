@@ -156,6 +156,15 @@ class DailyPipelineConfig:
     # the existing operational subset unchanged. Also enabled by
     # GPUWRF_FULL_WRFOUT_VARIABLES=1 / GPUWRF_FULL_WRFOUT=1.
     full_wrfout_variables: bool = False
+    # Direct coupling-interval override for WRF-LBM or similar external coupling:
+    # sets sub-hour segment_minutes = coupling_interval_minutes WITHOUT configuring
+    # any auxhist stream. Coupling callbacks (forecast_fn) fire every segment, but
+    # NO auxhist files are written and NO finite_guard_summary or
+    # _surface_diagnostics_for_output are called between segments (removes ~45s/h
+    # overhead at 3-minute coupling vs auxhist path). MUST be a factor of 60 (1, 2,
+    # 3, 4, 5, 6, 10, 12, 15, 20, 30, 60). None (default) = behaviour unchanged
+    # (substeps driven by auxhist_streams only).
+    coupling_interval_minutes: int | None = None
 
     @property
     def auxhist_streams(self) -> tuple[AuxhistStreamConfig, ...]:
@@ -758,8 +767,20 @@ def _auxhist_substeps_per_hour(config: DailyPipelineConfig) -> int:
     interval boundary land on a real model-state snapshot -- the auxhist frames are
     genuine GPU output, never interpolated/fabricated. Delegates to the shared
     multi-stream cadence helper in :mod:`gpuwrf.io.auxhist_stream`.
+
+    If ``config.coupling_interval_minutes`` is set, it overrides the auxhist-driven
+    cadence and directly sets the segment interval (for external coupling without
+    auxhist file overhead). MUST be a factor of 60.
     """
 
+    if config.coupling_interval_minutes is not None:
+        m = int(config.coupling_interval_minutes)
+        if 60 % m != 0:
+            raise ValueError(
+                f"coupling_interval_minutes={m} is not a factor of 60. "
+                f"Valid values: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60."
+            )
+        return 60 // m
     return auxhist_substeps_per_hour(config.auxhist_streams)
 
 
@@ -1349,7 +1370,12 @@ def _run_forecast_sequence(
             if seg == substeps:
                 break  # the hour boundary is handled by the main path below
             lead_minutes = (hour - 1) * 60.0 + seg * segment_minutes
-            if any(s.fires_at(lead_minutes) for s in streams):
+            # Auxhist side effects: finite guard, surface diagnostics, file I/O.
+            # Only fire when auxhist streams are configured AND a stream boundary
+            # matches lead_minutes. When coupling_interval_minutes is set without
+            # auxhist, streams is empty and this entire block is skipped (removes
+            # ~45s/h overhead at 3-minute coupling).
+            if streams and any(s.fires_at(lead_minutes) for s in streams):
                 seg_summary = finite_guard_summary(state)
                 if not seg_summary["all_finite"]:
                     _flush_writer()
