@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
 """
-WRF-LBM 3 分钟耦合原型（最干净路径）
+WRF-LBM 3 分钟耦合原型（真实 MPI 通信）
 
 设计：
 - 使用 coupling_interval_minutes 配置触发 3 分钟分段（无 auxhist 开销）
-- forecast_fn 回调提取边界数据
-- 模拟发送到 LBM（实际发送逻辑待 LBM 接口确认）
+- forecast_fn 回调提取 3D 子域数据
+- 通过 MPI 发送到 LBM（rank 1）
 - 不修改 gpuwrf 内部代码
+
+WRF-LBM 数据协议 v1.0：
+传输内容：3D 子域（不是边界面）
+字段列表：
+  - u: (nz, ny, nx+1) - staggered on x-faces
+  - v: (nz, ny+1, nx) - staggered on y-faces
+  - w: (nz+1, ny, nx) - staggered on z-faces
+  - theta: (nz, ny, nx) - mass points
+  - qv: (nz, ny, nx) - mass points
+  - p_total: (nz, ny, nx) - mass points
+  - t_skin: (ny, nx) - 2D surface field
+  - roughness_m: (ny, nx) - 2D surface field
 
 用法：
     # DRY 模式（验证接口，不发送数据）
-    python coupling_prototype_3min.py --dry --hours 1
+    python coupling_prototype_3min.py --dry --hours 1.0
 
-    # WET 模式（提取并模拟发送）
-    python coupling_prototype_3min.py --wet --hours 1
+    # MPI 模式（真实发送到 LBM rank 1）
+    python coupling_prototype_3min.py --mpi --hours 0.05
 """
 
 import argparse
@@ -55,40 +67,20 @@ class CoupledForecast3Min:
         Args:
             alignment: 耦合对齐参数（来自 compute_coupling_alignment）
             dt_lbm: LBM 时间步长（秒）
-            dry_run: True=验证接口不发送，False=提取并发送
-            subdomain_config: 3D 子域提取配置，支持：
-                {
-                    'z_range': (0, -1),   # 垂直层范围 (start, end)，-1 表示到末尾
-                    'y_range': (0, -1),   # 南北范围 (start, end)，-1 表示到末尾
-                    'x_range': (0, -1),   # 东西范围 (start, end)，-1 表示到末尾
-                    'fields': ['u', 'v', 'w', 'theta', 'qv', 'p'],  # 提取字段
-                }
-                示例 1：提取完整域
-                    {'z_range': (0, -1), 'y_range': (0, -1), 'x_range': (0, -1)}
-                示例 2：提取子域（垂直 10-30 层，南北 20-80，东西 50-150）
-                    {'z_range': (10, 30), 'y_range': (20, 80), 'x_range': (50, 150)}
+            dry_run: True=验证接口不发送，False=真实 MPI 发送
+            subdomain_config: 3D 子域提取配置
 
-                默认 None = 完整域的 (u, v, theta, qv)
-                subdomain_config = {
-                        'z_range': (0, -1),
-                        'y_range': (0, -1),
-                        'x_range': (0, -1),
-                        'fields': [
-                            # 3D 字段
-                            'u', 'v', 'w',           # 风场（staggered）
-                            'theta',                  # 位温
-                            'qv',                     # 水汽混合比（如果 LBM 需要湿度）
-                            #'p_total',                # 总压力（如果需要）
-                            # 2D 地表字段（会自动处理维度）
-                            't_skin',                 # TSK：地表温度
-                            'roughness_m',            # ZNT：地表粗糙度
-                        ]
-                    }
+        内存安全性说明（选项 B - WRF 计算后等待）:
+        1. _extract_subdomain() 返回的是 JAX array view（引用 state）
+        2. WRFMPISender.send_subdomain() 内部立即 cp.array() 显式拷贝
+        3. cp.asnumpy() 同步传输，返回时数据已在 host
+        4. 因此 state 在 _segmented_forecast_fn 中被修改不影响 MPI buffer
+        5. wait_all() 只需在 __call__ 返回前调用，无需在发送后立即等待
         """
         self.alignment = alignment
         self.dt_lbm = dt_lbm
         self.dry_run = dry_run
-        self.boundary_config = subdomain_config or {
+        self.subdomain_config = subdomain_config or {
             'z_range': (0, -1),
             'y_range': (0, -1),
             'x_range': (0, -1),
@@ -108,6 +100,13 @@ class CoupledForecast3Min:
         self.total_hours = 0.0
         self.history = []
 
+        # 初始化 MPI 发送端
+        if not dry_run:
+            from wrf_mpi_sender import WRFMPISender
+            self.mpi_sender = WRFMPISender(dest_rank=1)
+        else:
+            self.mpi_sender = None
+
     def __call__(self, state, namelist, hours):
         """forecast_fn 签名：(State, OperationalNamelist, float) -> State
 
@@ -126,27 +125,27 @@ class CoupledForecast3Min:
         print(f"  预期步数: {self.alignment['n_wrf_steps']} WRF 步")
 
         # ============================================================
-        # 1. 提取边界数据
+        # 1. 提取子域数据
         # ============================================================
         if not self.dry_run:
-            print(f"  提取边界数据...")
-            boundary_data = self._extract_boundary_fields(state)
+            print(f"  提取 3D 子域...")
+            subdomain_data = self._extract_subdomain(state)
 
             # 打印统计信息（触发 GPU 同步）
-            for name, arr in boundary_data.items():
+            for name, arr in subdomain_data.items():
                 val_min = float(jnp.min(arr))
                 val_max = float(jnp.max(arr))
                 print(f"    {name}: shape={arr.shape}, "
                       f"range=[{val_min:.2f}, {val_max:.2f}]")
 
             # ============================================================
-            # 2. 发送到 LBM（模拟）
+            # 2. 发送到 LBM
             # ============================================================
-            print(f"  模拟发送到 LBM...")
-            self._send_to_lbm(boundary_data, self.call_count)
+            print(f"  发送到 LBM rank 1...")
+            self._send_to_lbm(subdomain_data, self.call_count)
             print(f"  ✓ 发送完成")
         else:
-            print(f"  [DRY] 跳过边界提取和发送")
+            print(f"  [DRY] 跳过子域提取和发送")
 
         # ============================================================
         # 3. 调用真实预报（分段编译模式）
@@ -157,6 +156,15 @@ class CoupledForecast3Min:
         result = _segmented_forecast_fn(state, namelist, hours)
 
         print(f"  ✓ 预报完成")
+
+        # ============================================================
+        # 4. 等待 MPI 发送完成（选项 B - WRF 计算后等待）
+        # ============================================================
+        if not self.dry_run:
+            print(f"  等待 MPI 发送完成...")
+            self.mpi_sender.wait_all()
+            print(f"  ✓ MPI 发送完成")
+
         print(f"{'='*70}\n")
 
         # ============================================================
@@ -172,10 +180,10 @@ class CoupledForecast3Min:
         self.total_hours += hours
         return result
 
-    def _extract_boundary_fields(self, state):
+    def _extract_subdomain(self, state):
         """提取指定的 3D 子域，传送给 LBM 端
 
-        根据 boundary_config 提取完整的 3D 子域（不仅仅是边界面），
+        根据 subdomain_config 提取完整的 3D 子域（不仅仅是边界面），
         方便 LBM 端进行插值和嵌套计算。
 
         配置示例：
@@ -201,7 +209,7 @@ class CoupledForecast3Min:
                 例如：z_range=(10,30), y_range=(20,80), x_range=(50,150)
                       -> shape = (20, 60, 100)
         """
-        cfg = self.boundary_config
+        cfg = self.subdomain_config
         fields = cfg.get('fields', ['u', 'v', 'theta', 'qv'])
 
         # 获取 WRF state 的完整形状
@@ -234,50 +242,35 @@ class CoupledForecast3Min:
 
         return subdomain
 
-    def _send_to_lbm(self, boundary_data, coupling_step):
-        """发送边界数据到 LBM（模拟）
+    def _send_to_lbm(self, subdomain_data, coupling_step):
+        """发送 3D 子域到 LBM（DRY 打印 或 MPI 真实发送）
 
-        实际实现取决于：
-        1. VirtualFluids 的边界条件 API
-        2. 进程间通信方式（shm / socket / file）
-        3. 数据格式（numpy / binary / NetCDF）
-
-        当前仅模拟：计算数据大小、打印统计
+        Args:
+            subdomain_data: 字段名 -> JAX array 字典
+            coupling_step: 耦合步数
         """
-        import numpy as np
-
-        # 转换为 numpy（触发 GPU→CPU）
-        boundary_np = {k: np.asarray(v) for k, v in boundary_data.items()}
-
         # 计算数据大小
-        total_elements = sum(v.size for v in boundary_np.values())
-        total_bytes = sum(v.nbytes for v in boundary_np.values())
+        total_elements = sum(v.size for v in subdomain_data.values())
+        total_bytes = sum(v.nbytes for v in subdomain_data.values())
         total_mb = total_bytes / 1e6
 
         # 打印子域配置和形状
-        cfg = self.boundary_config
+        cfg = self.subdomain_config
         print(f"    子域配置: z={cfg.get('z_range', (0, -1))}, "
               f"y={cfg.get('y_range', (0, -1))}, "
               f"x={cfg.get('x_range', (0, -1))}")
-        for field, arr in boundary_np.items():
+        for field, arr in subdomain_data.items():
             print(f"      {field}: shape={arr.shape}, dtype={arr.dtype}")
 
-        print(f"    总数据量: {len(boundary_np)} 个字段, "
+        print(f"    总数据量: {len(subdomain_data)} 个字段, "
               f"{total_elements} 个元素, {total_mb:.2f} MB")
         print(f"    LBM 侧应运行: {self.alignment['m_lbm_steps']} 步 "
               f"(时长 {self.alignment['actual_coupling_s']}s)")
 
-        # TODO: 实际发送逻辑
-        # 方案 1：共享内存
-        #   shm = shared_memory.SharedMemory(name=f"wrf_lbm_coupling_{coupling_step}")
-        #   np_array = np.ndarray(shape, dtype, buffer=shm.buf)
-        #   np_array[:] = boundary_np['u']
-
-        # 方案 2：Unix socket
-        #   socket.send(pickle.dumps(boundary_np))
-
-        # 方案 3：文件（简单但慢）
-        #   np.savez(f"coupling_step_{coupling_step:04d}.npz", **boundary_np)
+        # MPI 发送
+        if self.mpi_sender:
+            n_fields = self.mpi_sender.send_subdomain(subdomain_data, coupling_step)
+            print(f"    ✓ MPI Isend: {n_fields} 个字段（非阻塞）")
 
     def summary(self):
         """打印运行摘要"""
@@ -326,13 +319,13 @@ def main():
     # 模式选择
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument('--dry', action='store_true',
-                           help='DRY 模式：验证接口，不提取/发送边界数据')
-    mode_group.add_argument('--wet', action='store_true',
-                           help='WET 模式：提取边界数据并模拟发送')
+                           help='DRY 模式：验证接口，不提取/发送子域数据')
+    mode_group.add_argument('--mpi', action='store_true',
+                           help='MPI 模式：提取子域数据并通过 MPI 发送到 LBM rank 1')
 
     # 预报参数
-    parser.add_argument('--hours', type=int, default=1,
-                       help='预报小时数（默认 1）')
+    parser.add_argument('--hours', type=float, default=1.0,
+                       help='预报小时数（默认 1.0）')
     parser.add_argument('--domain', type=str, default='d01',
                        help='域名（默认 d01）')
 
@@ -403,7 +396,7 @@ def main():
     }
 
     if args.output_dir is None:
-        output_dir = repo_root / 'runs' / ('coupling_3min_dry' if dry_run else 'coupling_3min_wet')
+        output_dir = repo_root / 'runs' / ('coupling_3min_dry' if dry_run else 'coupling_3min_mpi')
     else:
         output_dir = args.output_dir
 
@@ -464,8 +457,8 @@ def main():
     print(f"  域: {args.domain}")
     print(f"  预报小时数: {hours}")
     print(f"  耦合间隔: {alignment['actual_coupling_minutes']:.0f} 分钟")
-    print(f"  预期 forecast_fn 调用: ~{hours * alignment['substeps']} 次")
-    print(f"  模式: {'DRY (验证接口)' if dry_run else 'WET (提取+发送)'}")
+    print(f"  预期 forecast_fn 调用: ~{hours * 60 / alignment['actual_coupling_minutes']:.0f} 次")
+    print(f"  模式: {'DRY (验证接口)' if dry_run else 'MPI (真实发送)'}")
     print(f"  子域配置: z={subdomain_config['z_range']}, "
           f"y={subdomain_config['y_range']}, "
           f"x={subdomain_config['x_range']}, "
@@ -531,13 +524,13 @@ def main():
     print(f"✓ 无 auxhist 文件写入（使用 coupling_interval_minutes）")
 
     if dry_run:
-        print(f"\n下一步：运行 WET 模式")
-        print(f"  python {Path(__file__).name} --wet --hours 1")
+        print(f"\n下一步：运行 MPI 模式")
+        print(f"  python {Path(__file__).name} --mpi --hours 1.0")
     else:
         print(f"\n下一步：")
-        print(f"  1. 确认 LBM 侧接口（边界条件 API、dt_lbm 实测值）")
-        print(f"  2. 实现 _send_to_lbm 真实发送逻辑")
-        print(f"  3. 运行完整耦合测试（WRF + LBM 双向联调）")
+        print(f"  1. 启动完整耦合测试（WRF + LBM）")
+        print(f"  2. 使用 run_wrf_lbm_coupling.sh 启动脚本")
+        print(f"  3. LBM 侧验证数据范围、常数、演化")
 
     sys.exit(0)
 
