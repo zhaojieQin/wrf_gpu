@@ -102,9 +102,8 @@ class WRFMPISender:
             # JAX → CuPy（显式拷贝，避免 GH200 共享内存下 DLPack 生命周期问题）
             cp_arr = cp.array(jax_arr)
 
-            # 分配 pinned host memory
-            pinned_mem = cp.cuda.alloc_pinned_memory(cp_arr.nbytes)
-            host_buf = np.frombuffer(pinned_mem, dtype=cp_arr.dtype).reshape(cp_arr.shape)
+            # 分配 pinned host memory（使用 CuPy 的高层接口）
+            host_buf = cp.empty_pinned(cp_arr.shape, dtype=cp_arr.dtype)
 
             # GPU → Host（同步传输，返回时数据已在 host）
             cp_arr.get(out=host_buf)
@@ -113,8 +112,8 @@ class WRFMPISender:
             data_tag = coupling_step * 1000 + field_idx + 1
             request = self.comm.Isend(host_buf, dest=self.dest_rank, tag=data_tag)
 
-            # 保存 pending request（需要保持 host_buf 和 pinned_mem 引用）
-            self.pending_requests.append((request, host_buf, pinned_mem))
+            # 保存 pending request（需要保持 host_buf 引用）
+            self.pending_requests.append((request, host_buf))
 
         return len(subdomain_jax)
 
@@ -126,17 +125,15 @@ class WRFMPISender:
 
         注意：GH200 架构下 pinned memory 释放行为需要验证
         """
-        for request, host_buf, pinned_mem in self.pending_requests:
+        for request, host_buf in self.pending_requests:
             try:
                 # 等待 MPI 发送完成
                 request.Wait()
             finally:
                 # 显式释放资源（即使 Wait 失败也要释放）
-                # del 只删除 Python 引用，不保证立即 cudaFreeHost
-                # CuPy 的 pinned memory 通过 MemoryPointer 管理
+                # cp.empty_pinned() 返回的 NumPy array 会在 del 时自动释放 pinned memory
                 # 需要验证 GH200 上是否真正释放
                 del host_buf
-                del pinned_mem
 
         self.pending_requests.clear()
 

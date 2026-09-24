@@ -71,10 +71,8 @@ def main():
             # 转换 dtype 字符串
             dtype = np.dtype(dtype_str)
 
-            # 分配 pinned host buffer
-            nbytes = int(np.prod(shape) * dtype.itemsize)
-            pinned_mem = cp.cuda.alloc_pinned_memory(nbytes)
-            host_buf = np.frombuffer(pinned_mem, dtype=dtype).reshape(shape)
+            # 分配 pinned host buffer（使用 CuPy 的高层接口）
+            host_buf = cp.empty_pinned(shape, dtype=dtype)
 
             # MPI Recv（阻塞接收，comm.Recv 大写）
             data_tag = step * 1000 + field_idx + 1
@@ -100,7 +98,6 @@ def main():
 
             # 释放 pinned memory
             del host_buf
-            del pinned_mem
 
         print(f"  ✓ Step {step} 接收完成\n")
 
