@@ -149,7 +149,7 @@ class CoupledForecast3Min:
             # ============================================================
             t0 = time.time()
             print(f"\n[步骤 2/4] 发送到 LBM rank 1...")
-            self._send_to_lbm(subdomain_data, self.call_count)
+            self._send_to_lbm(subdomain_data, self.call_count - 1)  # 0-based tag
             t1 = time.time()
             print(f"  ✓ 发送完成 ({t1-t0:.2f}s)")
         else:
