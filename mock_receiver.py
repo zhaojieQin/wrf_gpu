@@ -20,6 +20,7 @@ LBM 侧 MPI 接收端（Python 测试版）
 import sys
 import argparse
 import signal
+from pathlib import Path
 from mpi4py import MPI
 import cupy as cp
 import numpy as np
@@ -43,6 +44,10 @@ def main():
                        help='将数据传输到 GPU 验证完整性')
     parser.add_argument('--verify-wrf', action='store_true',
                        help='验证 WRF 数据物理合理性（范围、常数、演化）')
+    parser.add_argument('--write-netcdf', action='store_true',
+                       help='将每个 step 数据写入 NetCDF 文件')
+    parser.add_argument('--output-dir', type=str, default='./received_nc',
+                       help='NetCDF 输出目录（默认 ./received_nc）')
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD
@@ -64,6 +69,11 @@ def main():
     print(f"  接收步数: {args.steps}")
     print(f"  GPU 验证: {args.verify_gpu}")
     print(f"  WRF 验证: {args.verify_wrf}")
+    print(f"  写 NetCDF: {args.write_netcdf}")
+    if args.write_netcdf:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  输出目录: {output_dir.resolve()}")
     print(f"  CUDA_VISIBLE_DEVICES: {cp.cuda.runtime.getDevice()}")
     print()
 
@@ -136,6 +146,11 @@ def main():
             if args.verify_wrf:
                 _verify_wrf_physics(current_data, step, history)
 
+            # 可选：写 NetCDF
+            if args.write_netcdf:
+                _write_netcdf(current_data, step, output_dir)
+                print(f"  ✓ 写入 NetCDF: {output_dir}/received_step_{step:02d}.nc")
+
             # 保存历史（用于演化验证）
             history.append(current_data)
 
@@ -161,6 +176,120 @@ def main():
     print(f"  总步数: {args.steps}")
     print(f"  ✓ 通道验证通过")
     print(f"{'='*70}")
+
+
+def _get_dims_for_shape(shape, nz, ny, nx):
+    """根据 shape 和标准网格尺寸推断维度名称
+
+    nz, ny, nx 从标准质量场（theta 或 qv）推断，不从 u 读。
+    只返回实际需要的维度，不预先创建所有可能的维度。
+    """
+    if len(shape) == 2:
+        # 2D 地表场：t_skin, roughness_m
+        return ('y', 'x')
+    elif len(shape) == 3:
+        nz_s, ny_s, nx_s = shape
+        # 根据各维度的尺寸判断是否 staggered
+        z_dim = 'z_stag' if nz_s == nz + 1 else 'z'
+        y_dim = 'y_stag' if ny_s == ny + 1 else 'y'
+        x_dim = 'x_stag' if nx_s == nx + 1 else 'x'
+        return (z_dim, y_dim, x_dim)
+    else:
+        raise ValueError(f"不支持的数组维度: {len(shape)}D, shape={shape}")
+
+
+def _write_netcdf(data, step, output_dir):
+    """将单个耦合步骤的数据写入 NetCDF 文件
+
+    Args:
+        data: 字段名 -> numpy array 字典
+        step: 耦合步数（0-based）
+        output_dir: 输出目录（Path 对象）
+    """
+    try:
+        from netCDF4 import Dataset
+    except ImportError:
+        print(f"    [警告] netCDF4 未安装，跳过写入")
+        return
+
+    # 1. 从标准质量场推断 nz, ny, nx
+    nz = ny = nx = None
+    for field in ('theta', 'qv', 'p_total'):
+        if field in data and data[field].ndim == 3:
+            nz, ny, nx = data[field].shape
+            break
+    if nz is None:
+        # 找不到标准质量场，从任意 3D 场取最小值估算
+        for arr in data.values():
+            if arr.ndim == 3:
+                # 取最小维度作为 nx/ny，避免从 staggered 维度读
+                nz = min(arr.shape[0], arr.shape[0])
+                ny = arr.shape[1]
+                nx = arr.shape[2]
+                # 减去可能的 stagger
+                if nx > ny:  # 可能是 x_stag
+                    nx -= 1
+                break
+    if nz is None:
+        print(f"    [警告] 无法推断网格尺寸，跳过 NetCDF 写入")
+        return
+
+    # 2. 扫描所有字段，收集需要的维度
+    needed_dims = set()
+    field_dims = {}
+    for field_name, arr in data.items():
+        dims = _get_dims_for_shape(arr.shape, nz, ny, nx)
+        field_dims[field_name] = dims
+        needed_dims.update(dims)
+
+    # 3. 确定各维度的大小
+    dim_sizes = {
+        'z':      nz,
+        'z_stag': nz + 1,
+        'y':      ny,
+        'y_stag': ny + 1,
+        'x':      nx,
+        'x_stag': nx + 1,
+    }
+
+    # 4. 写入 NetCDF
+    nc_path = output_dir / f'received_step_{step:02d}.nc'
+    with Dataset(str(nc_path), 'w', format='NETCDF4') as ds:
+        # 全局属性
+        ds.coupling_step = step
+        ds.wrf_time_s    = step * 180.0   # 3 分钟间隔
+        ds.wrf_time_min  = step * 3.0
+        ds.description   = f'WRF-LBM coupling step {step}'
+        ds.grid_nz       = nz
+        ds.grid_ny       = ny
+        ds.grid_nx       = nx
+
+        # 只创建实际用到的维度
+        for dim_name in sorted(needed_dims):
+            ds.createDimension(dim_name, dim_sizes[dim_name])
+
+        # 写入各字段
+        for field_name, arr in data.items():
+            dims = field_dims[field_name]
+            var = ds.createVariable(field_name, arr.dtype, dims,
+                                    zlib=True, complevel=4)
+            var[:] = arr
+
+            # 添加字段属性
+            _FIELD_ATTRS = {
+                'u':           ('m s-1',  'x-wind component (staggered)'),
+                'v':           ('m s-1',  'y-wind component (staggered)'),
+                'w':           ('m s-1',  'z-wind component (staggered)'),
+                'theta':       ('K',      'potential temperature'),
+                'qv':          ('kg kg-1','water vapor mixing ratio'),
+                'p_total':     ('Pa',     'total pressure'),
+                't_skin':      ('K',      'skin temperature (TSK)'),
+                'roughness_m': ('m',      'surface roughness length (ZNT)'),
+            }
+            if field_name in _FIELD_ATTRS:
+                units, desc = _FIELD_ATTRS[field_name]
+                var.units       = units
+                var.description = desc
 
 
 def _verify_wrf_physics(data, step, history):
