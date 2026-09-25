@@ -229,21 +229,10 @@ class CoupledForecast3Min:
         cfg = self.subdomain_config
         fields = cfg.get('fields', ['u', 'v', 'theta', 'qv'])
 
-        # 获取 WRF state 的完整形状
-        nz, ny, nx = state.u.shape
-
-        # 解析 3D 子域范围
+        # 解析 3D 子域范围（保留 -1，让每个字段自己处理）
         z_start, z_end = cfg.get('z_range', (0, -1))
         y_start, y_end = cfg.get('y_range', (0, -1))
         x_start, x_end = cfg.get('x_range', (0, -1))
-
-        # 处理 -1（表示到末尾）
-        if z_end == -1:
-            z_end = nz
-        if y_end == -1:
-            y_end = ny
-        if x_end == -1:
-            x_end = nx
 
         # 提取 3D 子域
         # 每个字段用自己的 shape 处理 -1，正确处理 staggered 网格：
