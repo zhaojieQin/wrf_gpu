@@ -245,17 +245,71 @@ class CoupledForecast3Min:
         if x_end == -1:
             x_end = nx
 
-        # 创建切片
-        z_slice = slice(z_start, z_end)
-        y_slice = slice(y_start, y_end)
-        x_slice = slice(x_start, x_end)
-
         # 提取 3D 子域
+        # 每个字段用自己的 shape 处理 -1，正确处理 staggered 网格：
+        #   u: (nz, ny, nx+1)  - x staggered
+        #   v: (nz, ny+1, nx)  - y staggered
+        #   w: (nz+1, ny, nx)  - z staggered
         subdomain = {}
         for field in fields:
             if hasattr(state, field):
                 arr = getattr(state, field)
-                subdomain[field] = arr[z_slice, y_slice, x_slice]
+
+                # 获取字段实际尺寸
+                if arr.ndim == 2:
+                    # 2D 字段（t_skin, roughness_m）
+                    ny_f, nx_f = arr.shape
+                    y_end_f = ny_f if y_end == -1 else min(y_end, ny_f)
+                    x_end_f = nx_f if x_end == -1 else min(x_end, nx_f)
+
+                    # 警告：如果被截断
+                    if y_end != -1 and y_end > ny_f:
+                        print(f"    [警告] {field}: y_end={y_end} 超出范围，截断至 {ny_f}")
+                    if x_end != -1 and x_end > nx_f:
+                        print(f"    [警告] {field}: x_end={x_end} 超出范围，截断至 {nx_f}")
+
+                    # 边界检查
+                    if y_start >= y_end_f:
+                        raise ValueError(
+                            f"y_range ({y_start}, {y_end}) 超出字段 {field} 的范围 (0, {ny_f})"
+                        )
+                    if x_start >= x_end_f:
+                        raise ValueError(
+                            f"x_range ({x_start}, {x_end}) 超出字段 {field} 的范围 (0, {nx_f})"
+                        )
+
+                    subdomain[field] = arr[y_start:y_end_f, x_start:x_end_f]
+
+                else:
+                    # 3D 字段
+                    nz_f, ny_f, nx_f = arr.shape
+                    z_end_f = nz_f if z_end == -1 else min(z_end, nz_f)
+                    y_end_f = ny_f if y_end == -1 else min(y_end, ny_f)
+                    x_end_f = nx_f if x_end == -1 else min(x_end, nx_f)
+
+                    # 警告：如果被截断
+                    if z_end != -1 and z_end > nz_f:
+                        print(f"    [警告] {field}: z_end={z_end} 超出范围，截断至 {nz_f}")
+                    if y_end != -1 and y_end > ny_f:
+                        print(f"    [警告] {field}: y_end={y_end} 超出范围，截断至 {ny_f}")
+                    if x_end != -1 and x_end > nx_f:
+                        print(f"    [警告] {field}: x_end={x_end} 超出范围，截断至 {nx_f}")
+
+                    # 边界检查
+                    if z_start >= z_end_f:
+                        raise ValueError(
+                            f"z_range ({z_start}, {z_end}) 超出字段 {field} 的范围 (0, {nz_f})"
+                        )
+                    if y_start >= y_end_f:
+                        raise ValueError(
+                            f"y_range ({y_start}, {y_end}) 超出字段 {field} 的范围 (0, {ny_f})"
+                        )
+                    if x_start >= x_end_f:
+                        raise ValueError(
+                            f"x_range ({x_start}, {x_end}) 超出字段 {field} 的范围 (0, {nx_f})"
+                        )
+
+                    subdomain[field] = arr[z_start:z_end_f, y_start:y_end_f, x_start:x_end_f]
 
         return subdomain
 
