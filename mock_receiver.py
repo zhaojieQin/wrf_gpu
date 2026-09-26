@@ -150,8 +150,15 @@ def main():
             meta_tag = step * 1000
             print(f"[DEBUG] about to recv metadata, tag={meta_tag}", flush=True)
             metadata = comm.recv(source=0, tag=meta_tag)
+            print(f"[DEBUG] comm.recv() returned, tag={meta_tag}", flush=True)
+            print(f"[DEBUG] metadata content: {metadata}", flush=True)
             print(f"[DEBUG] metadata received: {len(metadata)} fields", flush=True)
             print(f"  元数据接收: {len(metadata)} 个字段", flush=True)
+
+            # Synchronization barrier to confirm receipt
+            print(f"[DEBUG] Entering barrier after metadata receive", flush=True)
+            comm.Barrier()
+            print(f"[DEBUG] Barrier passed - sender confirmed", flush=True)
 
             # 当前步数据
             current_data = {}
