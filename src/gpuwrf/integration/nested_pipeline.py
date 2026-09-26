@@ -2479,6 +2479,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 mode_label = "[耦合 DRY]" if coupling_dry_run else "[耦合 MPI]"
 
                 if coupling_count[0] % coupling_log_interval == 0 or coupling_verbose:
+                    from datetime import datetime
                     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                     print(f"{mode_label} {timestamp} domain={domain} step={global_step} "
                           f"dry_run={coupling_dry_run} fields={n_fields} size={total_mb:.2f} MB",
@@ -2748,10 +2749,10 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             # Ready 握手：第一次循环且有耦合时，发送 ready 信号通知接收端编译完成
             if start == 0 and config.coupling_config is not None and not config.coupling_config.get('dry_run', False):
                 from mpi4py import MPI
-                import datetime
+                from datetime import datetime
                 READY_TAG = 999999
                 comm = MPI.COMM_WORLD
-                ready_time = datetime.datetime.now()
+                ready_time = datetime.now()
                 ready_msg = {"ready": True, "step": 0, "timestamp": ready_time.isoformat()}
                 print(f"[耦合同步] [{ready_time.strftime('%H:%M:%S.%f')[:-3]}] Sending ready signal (tag={READY_TAG}) to rank 1...", flush=True)
                 comm.send(ready_msg, dest=1, tag=READY_TAG)
