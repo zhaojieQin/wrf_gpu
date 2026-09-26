@@ -22,8 +22,13 @@ wrfout_files = {
 T00 = 300.0  # Base state temperature for WRF perturbation temperature
 
 
-def load_wrfout(file_path):
-    """Load WRF output file and extract key variables."""
+def load_wrfout(file_path, load_metadata=False):
+    """Load WRF output file and extract key variables.
+
+    Args:
+        file_path: Path to wrfout file
+        load_metadata: If True, load global attributes for nesting info
+    """
     print(f"Loading {file_path.name}...")
     nc = Dataset(file_path, 'r')
 
@@ -32,6 +37,13 @@ def load_wrfout(file_path):
         'xlat': nc.variables['XLAT'][0, :, :],
         'xlong': nc.variables['XLONG'][0, :, :],
     }
+
+    # Load nesting metadata if requested
+    if load_metadata:
+        data['metadata'] = {}
+        for attr in ['I_PARENT_START', 'J_PARENT_START', 'PARENT_GRID_RATIO']:
+            if hasattr(nc, attr):
+                data['metadata'][attr] = getattr(nc, attr)
 
     # 2D surface fields
     if 'T2' in nc.variables:
@@ -165,6 +177,114 @@ def plot_vertical_profiles():
     print(f"  Saved: {out_path}")
 
 
+def plot_nested_domains():
+    """Plot nested domain configuration with boundaries overlaid on d01."""
+    print("\nPlotting nested domain configuration...")
+
+    # Load all three domains
+    domains_data = {}
+    for domain_name, file_path in wrfout_files.items():
+        if not file_path.exists():
+            print(f"  Warning: {file_path} not found, skipping nested plot")
+            return
+        domains_data[domain_name] = load_wrfout(file_path, load_metadata=True)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 10))
+
+    # Plot d01 as base layer (T2 or theta)
+    d01_data = domains_data['d01']
+    if 't2' in d01_data:
+        field = d01_data['t2']
+        field_label = 'Temperature (°C)'
+        cmap = 'RdYlBu_r'
+    else:
+        field = d01_data['theta'][0, :, :]
+        field_label = 'Potential Temperature (K)'
+        cmap = 'RdYlBu_r'
+
+    # Get d01 extent in lon/lat
+    lon_min = d01_data['xlong'].min()
+    lon_max = d01_data['xlong'].max()
+    lat_min = d01_data['xlat'].min()
+    lat_max = d01_data['xlat'].max()
+    extent = [lon_min, lon_max, lat_min, lat_max]
+
+    # Plot d01 field
+    im = ax.imshow(field, cmap=cmap, origin='lower', extent=extent, alpha=0.7)
+    plt.colorbar(im, ax=ax, label=field_label, fraction=0.046, pad=0.04)
+
+    # Overlay d02 boundary
+    if 'd02' in domains_data:
+        d02_xlat = domains_data['d02']['xlat']
+        d02_xlong = domains_data['d02']['xlong']
+
+        # Extract corner points (counterclockwise from bottom-left)
+        corners_lon = [
+            d02_xlong[0, 0],    # bottom-left
+            d02_xlong[0, -1],   # bottom-right
+            d02_xlong[-1, -1],  # top-right
+            d02_xlong[-1, 0],   # top-left
+            d02_xlong[0, 0],    # close polygon
+        ]
+        corners_lat = [
+            d02_xlat[0, 0],
+            d02_xlat[0, -1],
+            d02_xlat[-1, -1],
+            d02_xlat[-1, 0],
+            d02_xlat[0, 0],
+        ]
+
+        ax.plot(corners_lon, corners_lat, 'r-', linewidth=2.5, label='d02')
+        # Add label at center
+        center_lon = (corners_lon[0] + corners_lon[2]) / 2
+        center_lat = (corners_lat[0] + corners_lat[2]) / 2
+        ax.text(center_lon, center_lat, 'd02', color='red', fontsize=14,
+                fontweight='bold', ha='center', va='center',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    # Overlay d03 boundary
+    if 'd03' in domains_data:
+        d03_xlat = domains_data['d03']['xlat']
+        d03_xlong = domains_data['d03']['xlong']
+
+        corners_lon = [
+            d03_xlong[0, 0],
+            d03_xlong[0, -1],
+            d03_xlong[-1, -1],
+            d03_xlong[-1, 0],
+            d03_xlong[0, 0],
+        ]
+        corners_lat = [
+            d03_xlat[0, 0],
+            d03_xlat[0, -1],
+            d03_xlat[-1, -1],
+            d03_xlat[-1, 0],
+            d03_xlat[0, 0],
+        ]
+
+        ax.plot(corners_lon, corners_lat, 'b-', linewidth=2.5, label='d03')
+        # Add label at center
+        center_lon = (corners_lon[0] + corners_lon[2]) / 2
+        center_lat = (corners_lat[0] + corners_lat[2]) / 2
+        ax.text(center_lon, center_lat, 'd03', color='blue', fontsize=14,
+                fontweight='bold', ha='center', va='center',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    # Set labels and title
+    ax.set_xlabel('Longitude (°E)', fontsize=12)
+    ax.set_ylabel('Latitude (°N)', fontsize=12)
+    ax.set_title(f'SWiFT Nested Domain Configuration\n{d01_data["time"]}', fontsize=14)
+    ax.legend(loc='upper right', fontsize=12)
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    # Save figure
+    out_path = plot_dir / 'swift_nested_domains.png'
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {out_path}")
+
+
 def plot_horizontal_slices():
     """Plot horizontal slices of theta, u, v, qv at a specific level."""
     print("\nPlotting horizontal slices...")
@@ -236,6 +356,7 @@ def main():
     plot_surface_fields()
     plot_vertical_profiles()
     plot_horizontal_slices()
+    plot_nested_domains()
 
     print("\n" + "=" * 60)
     print("Visualization complete!")
