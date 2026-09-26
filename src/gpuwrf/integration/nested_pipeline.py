@@ -2436,9 +2436,9 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         target_idx = int(target_domain[1:])
         ratio_accumulated = 1
         cadence_run = Gen2Run(Path(config.input_dir))
-        for d in range(1, target_idx):
-            parent_name = f"d{d:02d}"
-            ratio_accumulated *= cadence_run.grid(parent_name).parent_grid_ratio
+        for d in range(2, target_idx + 1):
+            domain_name = f"d{d:02d}"
+            ratio_accumulated *= cadence_run.grid(domain_name).parent_grid_ratio
 
         coupling_interval_steps = int(round(interval_seconds / target_dt))
         temp_root_steps = int(round(float(config.hours) * 3600.0 / dt_by_domain[names[0]]))
@@ -2691,9 +2691,9 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     target_idx = int(target_domain[1:])
                     ratio_accumulated = 1
                     cadence_run_seg = Gen2Run(Path(config.input_dir))
-                    for d in range(1, target_idx):
-                        parent_name = f"d{d:02d}"
-                        ratio_accumulated *= cadence_run_seg.grid(parent_name).parent_grid_ratio
+                    for d in range(2, target_idx + 1):
+                        domain_name = f"d{d:02d}"
+                        ratio_accumulated *= cadence_run_seg.grid(domain_name).parent_grid_ratio
                     print(f"[耦合分段] ratio_accumulated={ratio_accumulated}", flush=True)
                     seg_start_target = start * ratio_accumulated
                     seg_coupling_alarms = {}

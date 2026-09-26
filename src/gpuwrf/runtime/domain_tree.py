@@ -792,6 +792,11 @@ def run_domain_tree_callbacks(
                             )
                         )
                         maybe_output(spec.child)
+                        # Trigger coupling callback if at alarm step
+                        if coupling is not None and spec.child in coupling_alarm_sets:
+                            if own_steps[spec.child] in coupling_alarm_sets[spec.child]:
+                                coupling(spec.child, own_steps[spec.child], out[spec.child])
+                                events.append(("coupling", spec.child, own_steps[spec.child]))
                     maybe_output(name)
                     cascade_counts[fused_count_key] += 1
                 else:
