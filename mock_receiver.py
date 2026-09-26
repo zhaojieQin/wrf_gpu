@@ -18,12 +18,23 @@ LBM 侧 MPI 接收端（Python 测试版）
 """
 
 import sys
+print("[DEBUG] Python started", flush=True)
+
 import argparse
 import signal
 from pathlib import Path
+print("[DEBUG] stdlib imports done", flush=True)
+
 from mpi4py import MPI
-import cupy as cp
+print(f"[DEBUG] mpi4py imported, rank={MPI.COMM_WORLD.Get_rank()}, size={MPI.COMM_WORLD.Get_size()}", flush=True)
+
 import numpy as np
+print("[DEBUG] numpy imported", flush=True)
+
+import cupy as cp
+print(f"[DEBUG] cupy imported, device={cp.cuda.runtime.getDevice()}", flush=True)
+
+print("[DEBUG] all imports done", flush=True)
 
 
 class TimeoutError(Exception):
@@ -37,6 +48,7 @@ def timeout_handler(signum, frame):
 
 
 def main():
+    print("[DEBUG] entering main()", flush=True)
     parser = argparse.ArgumentParser(description="LBM MPI 接收端测试")
     parser.add_argument('--steps', type=int, default=20,
                        help='接收的耦合步数（默认 20，完整 1h 测试）')
