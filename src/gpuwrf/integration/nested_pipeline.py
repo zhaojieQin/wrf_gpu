@@ -2494,6 +2494,9 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     try:
                         mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1)
                         print(f"[DEBUG] send_subdomain returned, count={coupling_count[0]}", flush=True)
+                        # Wait for non-blocking Isend to complete before continuing
+                        mpi_sender.wait_all()
+                        print(f"[DEBUG] wait_all completed, count={coupling_count[0]}", flush=True)
                     except Exception as e:
                         print(f"[错误] Coupling send failed at count {coupling_count[0]}, "
                               f"step {global_step}: {e}", flush=True)
