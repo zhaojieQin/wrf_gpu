@@ -2688,6 +2688,15 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
     legacy_aot_reports: list[dict[str, Any]] = []
     start = 0
     async_writer_joined = False
+
+    # MPI Barrier: sync with receiver (rank 1) before starting forecast loop
+    if config.coupling_config is not None and not config.coupling_config.get('dry_run', False):
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        print("[耦合同步] Rank 0 ready, waiting at MPI Barrier for rank 1...", flush=True)
+        comm.Barrier()
+        print("[耦合同步] Barrier passed, starting forecast loop", flush=True)
+
     try:
         while start < root_steps:
             seg = min(root_seg_steps, root_steps - start)

@@ -100,6 +100,11 @@ def main():
     print(f"  CUDA_VISIBLE_DEVICES: {device_id}", flush=True)
     print(flush=True)
 
+    # Wait for sender (rank 0) to be ready before entering receive loop
+    print(f"[LBM Receiver] Waiting for rank 0 to be ready (MPI Barrier)...", flush=True)
+    comm.Barrier()
+    print(f"[LBM Receiver] Barrier passed, starting receive loop", flush=True)
+
     # 历史数据（用于演化验证）
     history = []
 
