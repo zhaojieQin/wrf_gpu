@@ -2771,17 +2771,21 @@ def run_operational_domain_tree(
     effective_feedback = (
         tree.feedback_enabled if feedback_enabled is None else bool(feedback_enabled)
     )
+    # Disable fusion when coupling is enabled (coupling callbacks require Python loop)
+    has_coupling = coupling is not None and coupling_alarm_steps
     runtime = prepared_runtime
     if (
         runtime is None
         or runtime.tree is not tree
         or runtime.feedback_enabled != effective_feedback
+        or (has_coupling and runtime.fused_cascade is not None)
     ):
         # Legacy callers and mismatched prepared runtimes explicitly take the old
         # per-call construction path.  The identity/mode guard prevents a runtime
         # prepared for another tree or one-way/two-way setting from being reused.
+        # Also recreate runtime when coupling is enabled to disable fusion.
         runtime = _prepare_operational_domain_tree_runtime(
-            tree, feedback_enabled=effective_feedback
+            tree, feedback_enabled=effective_feedback or has_coupling
         )
 
     return run_domain_tree_callbacks(
