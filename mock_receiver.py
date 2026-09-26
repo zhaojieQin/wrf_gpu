@@ -103,7 +103,34 @@ def main():
     # Wait for sender (rank 0) to be ready before entering receive loop
     print(f"[LBM Receiver] Waiting for rank 0 to be ready (MPI Barrier)...", flush=True)
     comm.Barrier()
-    print(f"[LBM Receiver] Barrier passed, starting receive loop", flush=True)
+    print(f"[LBM Receiver] Barrier passed, waiting for ready signal...", flush=True)
+
+    # Ready 握手：等待发送端编译完成（tag=999999 控制消息专用）
+    READY_TAG = 999999
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(600)  # 600 秒超时等待 ready
+    try:
+        import datetime
+        ready_wait_start = datetime.datetime.now()
+        print(f"[LBM Receiver] [{ready_wait_start.strftime('%H:%M:%S.%f')[:-3]}] Waiting for ready signal (tag={READY_TAG}, timeout=600s)...", flush=True)
+        ready_msg = comm.recv(source=0, tag=READY_TAG)
+        signal.alarm(0)  # 取消长超时
+        ready_received = datetime.datetime.now()
+        wait_time = (ready_received - ready_wait_start).total_seconds()
+        print(f"[LBM Receiver] [{ready_received.strftime('%H:%M:%S.%f')[:-3]}] Ready signal received (waited {wait_time:.1f}s): {ready_msg}", flush=True)
+    except TimeoutError:
+        signal.alarm(0)
+        print(f"[错误] Ready signal timeout (600s) - sender (rank 0) 未在 10 分钟内准备好", flush=True)
+        print(f"  可能原因：AOT 加载或编译失败", flush=True)
+        sys.exit(1)
+    except Exception as e:
+        signal.alarm(0)
+        print(f"[错误] Ready signal 接收失败: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+    print(f"[LBM Receiver] Ready signal confirmed, starting 60s-timeout receive loop", flush=True)
 
     # 历史数据（用于演化验证）
     history = []

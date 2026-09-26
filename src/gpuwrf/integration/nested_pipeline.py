@@ -2695,7 +2695,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         comm = MPI.COMM_WORLD
         print("[耦合同步] Rank 0 ready, waiting at MPI Barrier for rank 1...", flush=True)
         comm.Barrier()
-        print("[耦合同步] Barrier passed, starting forecast loop", flush=True)
+        print("[耦合同步] Barrier passed, loading AOT blobs and compiling...", flush=True)
 
     try:
         while start < root_steps:
@@ -2744,6 +2744,19 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     print(f"[耦合分段] run_kwargs['coupling_alarm_steps']={run_kwargs['coupling_alarm_steps']}", flush=True)
                 else:
                     print(f"[耦合分段] coupling_alarm_schedule is None, 跳过耦合", flush=True)
+
+            # Ready 握手：第一次循环且有耦合时，发送 ready 信号通知接收端编译完成
+            if start == 0 and config.coupling_config is not None and not config.coupling_config.get('dry_run', False):
+                from mpi4py import MPI
+                import datetime
+                READY_TAG = 999999
+                comm = MPI.COMM_WORLD
+                ready_time = datetime.datetime.now()
+                ready_msg = {"ready": True, "step": 0, "timestamp": ready_time.isoformat()}
+                print(f"[耦合同步] [{ready_time.strftime('%H:%M:%S.%f')[:-3]}] Sending ready signal (tag={READY_TAG}) to rank 1...", flush=True)
+                comm.send(ready_msg, dest=1, tag=READY_TAG)
+                print(f"[耦合同步] Ready signal sent, receiver can start 60s-timeout receive loop", flush=True)
+
             result = run_tree(
                 tree,
                 root_steps=seg,
