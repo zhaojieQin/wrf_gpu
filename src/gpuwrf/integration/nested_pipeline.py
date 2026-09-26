@@ -2483,7 +2483,9 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     print(f"[耦合汇总] 已触发 {coupling_count[0]} 次, 最后 step={global_step}", flush=True)
 
                 if not coupling_dry_run:
-                    mpi_sender.send_subdomain(subdomain_data, global_step - 1)
+                    # Use sequential coupling count (0, 1, 2, ...) for MPI tags
+                    # to match receiver's expectation: step in range(total_couplings)
+                    mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1)
             return seg_coupling_fn
     else:
         print("[耦合初始化] coupling_config is None, 耦合未启用", flush=True)
