@@ -95,7 +95,10 @@ class WRFMPISender:
 
         # 2. 发送元数据（comm.send，小写，pickle）
         meta_tag = coupling_step * 1000
+        print(f"[MPI-SEND] About to send metadata: step={coupling_step}, tag={meta_tag}, "
+              f"dest={self.dest_rank}, fields={len(metadata)}", flush=True)
         self.comm.send(metadata, dest=self.dest_rank, tag=meta_tag)
+        print(f"[MPI-SEND] Metadata sent successfully", flush=True)
 
         # 3. 逐字段发送数据
         for field_idx, (field_name, jax_arr) in enumerate(subdomain_jax.items()):
@@ -108,7 +111,10 @@ class WRFMPISender:
 
             # MPI Isend（非阻塞发送）
             data_tag = coupling_step * 1000 + field_idx + 1
+            print(f"[MPI-SEND] Sending field {field_idx+1}/{len(subdomain_jax)}: {field_name}, "
+                  f"tag={data_tag}, shape={host_buf.shape}", flush=True)
             request = self.comm.Isend(host_buf, dest=self.dest_rank, tag=data_tag)
+            print(f"[MPI-SEND] Isend started for field {field_name}", flush=True)
 
             # 保存 pending request（需要保持 host_buf 引用）
             self.pending_requests.append((request, host_buf))
