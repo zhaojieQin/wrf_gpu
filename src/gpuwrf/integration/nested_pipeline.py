@@ -2448,6 +2448,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             if step <= temp_target_steps
         )
         coupling_alarm_schedule = {target_domain: coupling_alarms}
+        print(f"[DEBUG] coupling_alarm_schedule set: {coupling_alarm_schedule}", flush=True)
         print(f"[耦合初始化] target_domain={target_domain} interval_seconds={interval_seconds} "
               f"coupling_alarms count={len(coupling_alarms)} coupling_alarm_schedule={coupling_alarm_schedule}",
               flush=True)
@@ -2693,13 +2694,16 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 else run_operational_domain_tree
             )
             run_kwargs = {}
+            print(f"[DEBUG] batch_size={batch_size}, int(batch_size)={int(batch_size)}", flush=True)
             if int(batch_size) > 1:
                 run_kwargs["batch_namelists"] = batch_namelists
                 run_kwargs["batch_size"] = int(batch_size)
             else:
+                print(f"[DEBUG] Entering batch_size==1 branch, coupling_alarm_schedule is not None: {coupling_alarm_schedule is not None}", flush=True)
                 run_kwargs["prepared_runtime"] = prepared_runtime
                 run_kwargs["event_aware_fusion_k"] = event_aware_fusion_k
                 # Compute segment-relative coupling alarms if needed
+                print(f"[DEBUG] About to check coupling_alarm_schedule: {coupling_alarm_schedule is not None}", flush=True)
                 if coupling_alarm_schedule is not None:
                     print(f"[耦合分段] seg={seg} start={start}", flush=True)
                     target_domain = config.coupling_config.get('target_domain', f"d{config.max_dom:02d}")
@@ -2723,6 +2727,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                             seg_coupling_alarms[domain_name] = seg_alarms
                     print(f"[耦合分段] seg_coupling_alarms={seg_coupling_alarms}", flush=True)
                     run_kwargs["coupling"] = _make_coupling_callback(seg_start_target)
+                    print(f"[DEBUG] run_kwargs['coupling'] set: {run_kwargs['coupling']}", flush=True)
                     run_kwargs["coupling_alarm_steps"] = seg_coupling_alarms if seg_coupling_alarms else None
                     print(f"[耦合分段] run_kwargs['coupling_alarm_steps']={run_kwargs['coupling_alarm_steps']}", flush=True)
                 else:
