@@ -2420,12 +2420,15 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         import sys
         project_root = PathType(__file__).parent.parent.parent.parent
         sys.path.insert(0, str(project_root.resolve()))
-        from wrf_mpi_sender import send_subdomain
+        from wrf_mpi_sender import WRFMPISender
         from gpuwrf.wrf_lbm_coupling.subdomain import extract_subdomain
 
         target_domain = config.coupling_config.domain
         interval_seconds = config.coupling_config.interval_seconds
         target_dt = dt_by_domain[target_domain]
+
+        # Initialize MPI sender
+        mpi_sender = WRFMPISender(dest_rank=1)
 
         # Compute ratio_accumulated for target domain
         target_idx = int(target_domain[1:])
@@ -2448,7 +2451,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             if domain != target_domain:
                 return
             subdomain_data = extract_subdomain(carry, config.coupling_config)
-            send_subdomain(subdomain_data, step - 1)
+            mpi_sender.send_subdomain(subdomain_data, step - 1)
 
         def _make_coupling_callback(seg_start_target: int):
             def seg_coupling_fn(domain: str, step: int, carry) -> None:
@@ -2456,7 +2459,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     return
                 global_step = seg_start_target + step
                 subdomain_data = extract_subdomain(carry, config.coupling_config)
-                send_subdomain(subdomain_data, global_step - 1)
+                mpi_sender.send_subdomain(subdomain_data, global_step - 1)
             return seg_coupling_fn
 
         coupling_callback = _send_coupling_data_nested
