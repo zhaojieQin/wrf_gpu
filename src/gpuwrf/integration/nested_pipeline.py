@@ -2463,7 +2463,11 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 if domain != target_domain:
                     return
                 global_step = seg_start_target + step
+                print(f"[DEBUG] seg_coupling_fn called: domain={domain}, step={step}, "
+                      f"global_step={global_step}, dry_run={coupling_dry_run}", flush=True)
+
                 subdomain_data = extract_subdomain(carry, config.coupling_config)
+                print(f"[DEBUG] extract_subdomain returned: {len(subdomain_data)} fields", flush=True)
 
                 # Logging
                 coupling_count[0] += 1
@@ -2485,8 +2489,10 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 if not coupling_dry_run:
                     # Use sequential coupling count (0, 1, 2, ...) for MPI tags
                     # to match receiver's expectation: step in range(total_couplings)
+                    print(f"[DEBUG] about to send_subdomain, count={coupling_count[0]}", flush=True)
                     try:
                         mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1)
+                        print(f"[DEBUG] send_subdomain returned, count={coupling_count[0]}", flush=True)
                     except Exception as e:
                         print(f"[错误] Coupling send failed at count {coupling_count[0]}, "
                               f"step {global_step}: {e}", flush=True)
