@@ -2448,11 +2448,38 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         )
         coupling_alarm_schedule = {target_domain: coupling_alarms}
 
+        # Coupling logging configuration
+        import os
+        from datetime import datetime
+        coupling_verbose = os.environ.get('GPUWRF_COUPLING_VERBOSE', '0') == '1'
+        coupling_dry_run = config.coupling_config.get('dry_run', False)
+        coupling_count = [0]  # Mutable counter for closure
+        coupling_log_interval = 10 if not coupling_verbose else 1
+
         def _send_coupling_data_nested(domain: str, step: int, carry) -> None:
             if domain != target_domain:
                 return
             subdomain_data = extract_subdomain(carry, config.coupling_config)
-            mpi_sender.send_subdomain(subdomain_data, step - 1)
+
+            # Logging
+            coupling_count[0] += 1
+            n_fields = len(subdomain_data)
+            total_bytes = sum(arr.nbytes for arr in subdomain_data.values())
+            total_mb = total_bytes / 1e6
+
+            mode_label = "[耦合 DRY]" if coupling_dry_run else "[耦合 MPI]"
+
+            if coupling_count[0] % coupling_log_interval == 0 or coupling_verbose:
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                print(f"{mode_label} {timestamp} domain={domain} step={step} "
+                      f"dry_run={coupling_dry_run} fields={n_fields} size={total_mb:.2f} MB",
+                      flush=True)
+
+            if coupling_count[0] % 100 == 0:
+                print(f"[耦合汇总] 已触发 {coupling_count[0]} 次, 最后 step={step}", flush=True)
+
+            if not coupling_dry_run:
+                mpi_sender.send_subdomain(subdomain_data, step - 1)
 
         def _make_coupling_callback(seg_start_target: int):
             def seg_coupling_fn(domain: str, step: int, carry) -> None:
@@ -2460,7 +2487,26 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     return
                 global_step = seg_start_target + step
                 subdomain_data = extract_subdomain(carry, config.coupling_config)
-                mpi_sender.send_subdomain(subdomain_data, global_step - 1)
+
+                # Logging
+                coupling_count[0] += 1
+                n_fields = len(subdomain_data)
+                total_bytes = sum(arr.nbytes for arr in subdomain_data.values())
+                total_mb = total_bytes / 1e6
+
+                mode_label = "[耦合 DRY]" if coupling_dry_run else "[耦合 MPI]"
+
+                if coupling_count[0] % coupling_log_interval == 0 or coupling_verbose:
+                    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    print(f"{mode_label} {timestamp} domain={domain} step={global_step} "
+                          f"dry_run={coupling_dry_run} fields={n_fields} size={total_mb:.2f} MB",
+                          flush=True)
+
+                if coupling_count[0] % 100 == 0:
+                    print(f"[耦合汇总] 已触发 {coupling_count[0]} 次, 最后 step={global_step}", flush=True)
+
+                if not coupling_dry_run:
+                    mpi_sender.send_subdomain(subdomain_data, global_step - 1)
             return seg_coupling_fn
 
         coupling_callback = _send_coupling_data_nested
