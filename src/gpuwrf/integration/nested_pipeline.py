@@ -2410,6 +2410,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
     coupling_callback = None
     coupling_alarm_schedule = None
     if config.coupling_config is not None:
+        print(f"[耦合初始化] coupling_config = {config.coupling_config}", flush=True)
         if batch_size > 1:
             raise ValueError(
                 "WRF-LBM coupling is not supported with batch_size > 1. "
@@ -2447,6 +2448,9 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             if step <= temp_target_steps
         )
         coupling_alarm_schedule = {target_domain: coupling_alarms}
+        print(f"[耦合初始化] target_domain={target_domain} interval_seconds={interval_seconds} "
+              f"coupling_alarms count={len(coupling_alarms)} coupling_alarm_schedule={coupling_alarm_schedule}",
+              flush=True)
 
         # Coupling logging configuration
         coupling_verbose = os.environ.get('GPUWRF_COUPLING_VERBOSE', '0') == '1'
@@ -2481,6 +2485,8 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 if not coupling_dry_run:
                     mpi_sender.send_subdomain(subdomain_data, global_step - 1)
             return seg_coupling_fn
+    else:
+        print("[耦合初始化] coupling_config is None, 耦合未启用", flush=True)
 
     feedback_enabled = bool(config.feedback)
     tree = DomainTree.from_domains(hierarchy, bundles, feedback_enabled=feedback_enabled)
@@ -2680,6 +2686,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 run_kwargs["event_aware_fusion_k"] = event_aware_fusion_k
                 # Compute segment-relative coupling alarms if needed
                 if coupling_alarm_schedule is not None:
+                    print(f"[耦合分段] seg={seg} start={start}", flush=True)
                     target_domain = config.coupling_config.get('target_domain', f"d{config.max_dom:02d}")
                     target_idx = int(target_domain[1:])
                     ratio_accumulated = 1
@@ -2687,6 +2694,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     for d in range(1, target_idx):
                         parent_name = f"d{d:02d}"
                         ratio_accumulated *= cadence_run_seg.grid(parent_name).parent_grid_ratio
+                    print(f"[耦合分段] ratio_accumulated={ratio_accumulated}", flush=True)
                     seg_start_target = start * ratio_accumulated
                     seg_coupling_alarms = {}
                     for domain_name, alarms in coupling_alarm_schedule.items():
@@ -2698,8 +2706,12 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                         )
                         if seg_alarms:
                             seg_coupling_alarms[domain_name] = seg_alarms
+                    print(f"[耦合分段] seg_coupling_alarms={seg_coupling_alarms}", flush=True)
                     run_kwargs["coupling"] = _make_coupling_callback(seg_start_target)
                     run_kwargs["coupling_alarm_steps"] = seg_coupling_alarms if seg_coupling_alarms else None
+                    print(f"[耦合分段] run_kwargs['coupling_alarm_steps']={run_kwargs['coupling_alarm_steps']}", flush=True)
+                else:
+                    print(f"[耦合分段] coupling_alarm_schedule is None, 跳过耦合", flush=True)
             result = run_tree(
                 tree,
                 root_steps=seg,
