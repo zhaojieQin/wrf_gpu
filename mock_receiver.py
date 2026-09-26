@@ -61,13 +61,20 @@ def main():
     parser.add_argument('--output-dir', type=str, default='./received_nc',
                        help='NetCDF 输出目录（默认 ./received_nc）')
     args = parser.parse_args()
+    print(f"[DEBUG] args parsed: steps={args.steps}", flush=True)
 
     comm = MPI.COMM_WORLD
+    print(f"[DEBUG] comm obtained: {comm}", flush=True)
+
     rank = comm.Get_rank()
+    print(f"[DEBUG] rank={rank}", flush=True)
+
     size = comm.Get_size()
+    print(f"[DEBUG] size={size}", flush=True)
 
     # 检查 rank
     if rank != 1:
+        print(f"[DEBUG] rank != 1, rank={rank}", flush=True)
         if rank == 0:
             # Rank 0 静默等待（WRF 发送端）
             pass
@@ -76,6 +83,7 @@ def main():
             sys.exit(1)
         return
 
+    print("[DEBUG] passed rank check", flush=True)
     print(f"[LBM Receiver] 启动")
     print(f"  Rank: {rank}")
     print(f"  接收步数: {args.steps}")

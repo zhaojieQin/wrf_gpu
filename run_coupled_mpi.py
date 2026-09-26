@@ -50,6 +50,8 @@ if rank == 0:
     )
     execute_nested_pipeline(config)
     print("[Rank 0] WRF forecast completed", flush=True)
+    comm.Barrier()
+    print("[Rank 0] Barrier done", flush=True)
 
 elif rank == 1:
     os.environ['CUDA_VISIBLE_DEVICES'] = '1'
