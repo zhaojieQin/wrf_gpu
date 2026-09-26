@@ -728,6 +728,12 @@ def run_domain_tree_callbacks(
                 maybe_output(name)
                 # Trigger coupling callback if at alarm step
                 if coupling is not None and name in coupling_alarm_sets:
+                    print("[DBG-leaf]", name,
+                          "coupling_none=", coupling is None,
+                          "in_sets=", name in coupling_alarm_sets,
+                          "own_step=", own_steps.get(name), type(own_steps.get(name)),
+                          "alarm_val=", coupling_alarm_sets.get(name),
+                          "alarm_type=", type(coupling_alarm_sets.get(name)), flush=True)
                     if own_steps[name] in coupling_alarm_sets[name]:
                         coupling(name, own_steps[name], out[name])
                         events.append(("coupling", name, own_steps[name]))
@@ -794,6 +800,12 @@ def run_domain_tree_callbacks(
                         maybe_output(spec.child)
                         # Trigger coupling callback if at alarm step
                         if coupling is not None and spec.child in coupling_alarm_sets:
+                            print("[DBG-fusion]", spec.child,
+                                  "coupling_none=", coupling is None,
+                                  "in_sets=", spec.child in coupling_alarm_sets,
+                                  "own_step=", own_steps.get(spec.child), type(own_steps.get(spec.child)),
+                                  "alarm_val=", coupling_alarm_sets.get(spec.child),
+                                  "alarm_type=", type(coupling_alarm_sets.get(spec.child)), flush=True)
                             if own_steps[spec.child] in coupling_alarm_sets[spec.child]:
                                 coupling(spec.child, own_steps[spec.child], out[spec.child])
                                 events.append(("coupling", spec.child, own_steps[spec.child]))
