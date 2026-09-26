@@ -2423,12 +2423,13 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         from wrf_mpi_sender import WRFMPISender
         from gpuwrf.wrf_lbm_coupling.subdomain import extract_subdomain
 
-        target_domain = config.coupling_config.domain
-        interval_seconds = config.coupling_config.interval_seconds
+        target_domain = config.coupling_config.get('target_domain', f"d{config.max_dom:02d}")
+        interval_seconds = config.coupling_config['interval_seconds']
         target_dt = dt_by_domain[target_domain]
 
         # Initialize MPI sender
-        mpi_sender = WRFMPISender(dest_rank=1)
+        mpi_dest_rank = config.coupling_config.get('mpi_dest_rank', 1)
+        mpi_sender = WRFMPISender(dest_rank=mpi_dest_rank)
 
         # Compute ratio_accumulated for target domain
         target_idx = int(target_domain[1:])
@@ -2662,7 +2663,7 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 run_kwargs["event_aware_fusion_k"] = event_aware_fusion_k
                 # Compute segment-relative coupling alarms if needed
                 if coupling_alarm_schedule is not None:
-                    target_domain = config.coupling_config.domain
+                    target_domain = config.coupling_config.get('target_domain', f"d{config.max_dom:02d}")
                     target_idx = int(target_domain[1:])
                     ratio_accumulated = 1
                     cadence_run_seg = Gen2Run(Path(config.input_dir))
