@@ -29,49 +29,13 @@ rm -rf received_nc_swift
 
 echo ""
 echo "============================================================"
-echo "Starting 2-rank MPI job:"
+echo "Starting 2-rank MPI job with unified MPI_COMM_WORLD:"
 echo "  Rank 0: WRF GPU forecast (CUDA_VISIBLE_DEVICES=0)"
 echo "  Rank 1: LBM MPI receiver (CUDA_VISIBLE_DEVICES=1)"
 echo "============================================================"
 echo ""
 
-srun --ntasks=2 bash -c '
-    if [ $SLURM_PROCID -eq 0 ]; then
-        echo "[Rank 0] Starting WRF GPU forecast..."
-        export CUDA_VISIBLE_DEVICES=0
-        python -c "
-from pathlib import Path
-from gpuwrf.integration.nested_pipeline import NestedPipelineConfig, execute_nested_pipeline
-
-config = NestedPipelineConfig(
-    input_dir=Path(\"/home/zhaqi746/code/wrf_gpu/examples/SWiFT\"),
-    output_dir=Path(\"/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi\"),
-    proof_dir=Path(\"/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi/proofs\"),
-    hours=1,
-    max_dom=3,
-    coupling_config={
-        \"enabled\": True,
-        \"interval_seconds\": 10,
-        \"target_domain\": \"d03\",
-        \"dry_run\": False,
-        \"mpi_dest_rank\": 1,
-        \"subdomain_config\": {
-            \"z_range\": (0, -1),
-            \"y_range\": (0, -1),
-            \"x_range\": (0, -1),
-            \"fields\": [\"u\", \"v\", \"theta\", \"qv\"],
-        },
-    },
-)
-execute_nested_pipeline(config)
-"
-    elif [ $SLURM_PROCID -eq 1 ]; then
-        echo "[Rank 1] Starting LBM MPI receiver..."
-        export CUDA_VISIBLE_DEVICES=1
-        cd /home/zhaqi746/code/wrf_gpu
-        python mock_receiver.py --steps 360 --verify-wrf --write-netcdf --output-dir ./received_nc_swift
-    fi
-'
+srun --ntasks=2 python run_coupled_mpi.py
 
 exit_code=$?
 
