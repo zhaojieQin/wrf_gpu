@@ -84,18 +84,21 @@ def main():
         return
 
     print("[DEBUG] passed rank check", flush=True)
-    print(f"[LBM Receiver] 启动")
-    print(f"  Rank: {rank}")
-    print(f"  接收步数: {args.steps}")
-    print(f"  GPU 验证: {args.verify_gpu}")
-    print(f"  WRF 验证: {args.verify_wrf}")
-    print(f"  写 NetCDF: {args.write_netcdf}")
+    print(f"[LBM Receiver] 启动", flush=True)
+    print(f"  Rank: {rank}", flush=True)
+    print(f"  接收步数: {args.steps}", flush=True)
+    print(f"  GPU 验证: {args.verify_gpu}", flush=True)
+    print(f"  WRF 验证: {args.verify_wrf}", flush=True)
+    print(f"  写 NetCDF: {args.write_netcdf}", flush=True)
     if args.write_netcdf:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"  输出目录: {output_dir.resolve()}")
-    print(f"  CUDA_VISIBLE_DEVICES: {cp.cuda.runtime.getDevice()}")
-    print()
+        print(f"  输出目录: {output_dir.resolve()}", flush=True)
+    print("[DEBUG] about to call cp.cuda.runtime.getDevice()", flush=True)
+    device_id = cp.cuda.runtime.getDevice()
+    print(f"[DEBUG] getDevice() returned: {device_id}", flush=True)
+    print(f"  CUDA_VISIBLE_DEVICES: {device_id}", flush=True)
+    print(flush=True)
 
     # 历史数据（用于演化验证）
     history = []
@@ -107,14 +110,16 @@ def main():
         signal.alarm(60)
 
         try:
-            print(f"{'='*70}")
-            print(f"[Step {step}] 开始接收（超时 60s）")
-            print(f"{'='*70}")
+            print(f"{'='*70}", flush=True)
+            print(f"[Step {step}] 开始接收（超时 60s）", flush=True)
+            print(f"{'='*70}", flush=True)
 
             # 1. 接收元数据（comm.recv，小写，pickle）
             meta_tag = step * 1000
+            print(f"[DEBUG] about to recv metadata, tag={meta_tag}", flush=True)
             metadata = comm.recv(source=0, tag=meta_tag)
-            print(f"  元数据接收: {len(metadata)} 个字段")
+            print(f"[DEBUG] metadata received: {len(metadata)} fields", flush=True)
+            print(f"  元数据接收: {len(metadata)} 个字段", flush=True)
 
             # 当前步数据
             current_data = {}
@@ -141,20 +146,20 @@ def main():
                 # 打印验证信息
                 val_min = host_buf.min()
                 val_max = host_buf.max()
-                print(f"    {field_name}:")
-                print(f"      shape={shape}, dtype={dtype}, size={size_mb:.2f} MB")
-                print(f"      range=[{val_min:.6f}, {val_max:.6f}]")
+                print(f"    {field_name}:", flush=True)
+                print(f"      shape={shape}, dtype={dtype}, size={size_mb:.2f} MB", flush=True)
+                print(f"      range=[{val_min:.6f}, {val_max:.6f}]", flush=True)
 
                 # 可选：传输到 GPU 验证
                 if args.verify_gpu:
                     gpu_data = cp.asarray(host_buf)
                     gpu_min = float(cp.min(gpu_data))
                     gpu_max = float(cp.max(gpu_data))
-                    print(f"      GPU 验证: [{gpu_min:.6f}, {gpu_max:.6f}]")
+                    print(f"      GPU 验证: [{gpu_min:.6f}, {gpu_max:.6f}]", flush=True)
 
                     # 验证 CPU 和 GPU 数据一致
                     if abs(gpu_min - val_min) > 1e-6 or abs(gpu_max - val_max) > 1e-6:
-                        print(f"      [警告] CPU/GPU 数据不一致！")
+                        print(f"      [警告] CPU/GPU 数据不一致！", flush=True)
 
                 # 释放 buffer
                 del host_buf
@@ -169,33 +174,33 @@ def main():
             # 可选：写 NetCDF
             if args.write_netcdf:
                 _write_netcdf(current_data, step, output_dir)
-                print(f"  ✓ 写入 NetCDF: {output_dir}/received_step_{step:02d}.nc")
+                print(f"  ✓ 写入 NetCDF: {output_dir}/received_step_{step:02d}.nc", flush=True)
 
             # 保存历史（用于演化验证）
             history.append(current_data)
 
-            print(f"  ✓ Step {step} 接收完成\n")
+            print(f"  ✓ Step {step} 接收完成\n", flush=True)
 
         except TimeoutError as e:
-            print(f"\n[错误] {e}")
-            print(f"  可能原因：")
-            print(f"    1. WRF 发送端崩溃或卡住")
-            print(f"    2. MPI 通信死锁")
-            print(f"    3. GPU 内存不足")
-            print(f"  建议：检查 rank 0 输出，或减少 --hours 参数")
+            print(f"\n[错误] {e}", flush=True)
+            print(f"  可能原因：", flush=True)
+            print(f"    1. WRF 发送端崩溃或卡住", flush=True)
+            print(f"    2. MPI 通信死锁", flush=True)
+            print(f"    3. GPU 内存不足", flush=True)
+            print(f"  建议：检查 rank 0 输出，或减少 --hours 参数", flush=True)
             sys.exit(1)
         except Exception as e:
             signal.alarm(0)  # 取消超时
-            print(f"\n[错误] Step {step} 接收失败: {e}")
+            print(f"\n[错误] Step {step} 接收失败: {e}", flush=True)
             import traceback
             traceback.print_exc()
             sys.exit(1)
 
-    print(f"{'='*70}")
-    print(f"[LBM Receiver] 完成")
-    print(f"  总步数: {args.steps}")
-    print(f"  ✓ 通道验证通过")
-    print(f"{'='*70}")
+    print(f"{'='*70}", flush=True)
+    print(f"[LBM Receiver] 完成", flush=True)
+    print(f"  总步数: {args.steps}", flush=True)
+    print(f"  ✓ 通道验证通过", flush=True)
+    print(f"{'='*70}", flush=True)
 
 
 def _get_dims_for_shape(shape, nz, ny, nx):
@@ -229,7 +234,7 @@ def _write_netcdf(data, step, output_dir):
     try:
         from netCDF4 import Dataset
     except ImportError:
-        print(f"    [警告] netCDF4 未安装，跳过写入")
+        print(f"    [警告] netCDF4 未安装，跳过写入", flush=True)
         return
 
     # 1. 从标准质量场推断 nz, ny, nx
@@ -251,7 +256,7 @@ def _write_netcdf(data, step, output_dir):
                     nx -= 1
                 break
     if nz is None:
-        print(f"    [警告] 无法推断网格尺寸，跳过 NetCDF 写入")
+        print(f"    [警告] 无法推断网格尺寸，跳过 NetCDF 写入", flush=True)
         return
 
     # 2. 扫描所有字段，收集需要的维度
@@ -320,12 +325,12 @@ def _verify_wrf_physics(data, step, history):
     2. 常数场检测（地表字段应基本不变）
     3. 演化检测（风场/温度应随时间变化）
     """
-    print(f"    WRF 物理验证:")
+    print(f"    WRF 物理验证:", flush=True)
 
     # 1. 数值范围检查
     for field, arr in data.items():
         if np.any(np.isnan(arr)) or np.any(np.isinf(arr)):
-            print(f"      [警告] {field} 包含 NaN/Inf")
+            print(f"      [警告] {field} 包含 NaN/Inf", flush=True)
             return
 
     # 2. 常数场检查（仅 2D 地表字段）
@@ -335,7 +340,7 @@ def _verify_wrf_physics(data, step, history):
             if field in data and field in prev_data:
                 diff = np.abs(data[field] - prev_data[field]).max()
                 if diff > 1.0:  # TSK 不应变化超过 1K
-                    print(f"      [警告] {field} 变化过大: {diff:.3f}")
+                    print(f"      [警告] {field} 变化过大: {diff:.3f}", flush=True)
 
     # 3. 演化检查（3D 动力场）
     if step > 0 and history:
@@ -344,11 +349,11 @@ def _verify_wrf_physics(data, step, history):
             if field in data and field in prev_data:
                 diff = np.abs(data[field] - prev_data[field]).max()
                 if diff < 1e-6:  # 应该有演化
-                    print(f"      [警告] {field} 无演化（冻结）")
+                    print(f"      [警告] {field} 无演化（冻结）", flush=True)
                 else:
-                    print(f"      ✓ {field} 演化正常: Δmax={diff:.6f}")
+                    print(f"      ✓ {field} 演化正常: Δmax={diff:.6f}", flush=True)
 
-    print(f"      ✓ 物理验证通过")
+    print(f"      ✓ 物理验证通过", flush=True)
 
 
 if __name__ == "__main__":
