@@ -2485,7 +2485,14 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 if not coupling_dry_run:
                     # Use sequential coupling count (0, 1, 2, ...) for MPI tags
                     # to match receiver's expectation: step in range(total_couplings)
-                    mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1)
+                    try:
+                        mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1)
+                    except Exception as e:
+                        print(f"[错误] Coupling send failed at count {coupling_count[0]}, "
+                              f"step {global_step}: {e}", flush=True)
+                        import traceback
+                        traceback.print_exc()
+                        raise
             return seg_coupling_fn
     else:
         print("[耦合初始化] coupling_config is None, 耦合未启用", flush=True)
@@ -2759,6 +2766,14 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             final_states = result.states
             start += seg
         jax.block_until_ready(tuple(state.theta for state in final_states.values()))
+
+        # Wait for all MPI coupling sends to complete
+        if config.coupling_config is not None and not config.coupling_config.get('dry_run', False):
+            if 'mpi_sender' in locals() and mpi_sender is not None:
+                print("[耦合] Waiting for all MPI sends to complete...", flush=True)
+                mpi_sender.wait_all()
+                print("[耦合] All MPI sends completed", flush=True)
+
         forecast_wall_s = time.perf_counter() - forecast_start
         # Drain the background output stages: every submitted output frame must be
         # materialized + on disk (and the first stage error surfaced -- join()
