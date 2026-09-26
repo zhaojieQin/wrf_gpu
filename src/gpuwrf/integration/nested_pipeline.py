@@ -140,6 +140,9 @@ class NestedPipelineConfig:
     # GPUWRF_BATCH_ENSEMBLE is a fixed supported B; unset repeats ``input_dir``
     # for all lanes (useful for bit-identity/perturbation gates).
     batch_input_dirs: tuple[Path, ...] | None = None
+    # Optional WRF-LBM coupling configuration.  When set, triggers coupling
+    # callbacks at specified intervals for the target domain.
+    coupling_config: Any = None
 
 
 def domain_names_for(max_dom: int) -> tuple[str, ...]:
@@ -2403,6 +2406,61 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         )
     )
 
+    # WRF-LBM coupling initialization
+    coupling_callback = None
+    coupling_alarm_schedule = None
+    if config.coupling_config is not None:
+        if batch_size > 1:
+            raise ValueError(
+                "WRF-LBM coupling is not supported with batch_size > 1. "
+                "Set GPUWRF_BATCH_ENSEMBLE=1 or disable coupling."
+            )
+
+        from pathlib import Path as PathType
+        import sys
+        project_root = PathType(__file__).parent.parent.parent.parent
+        sys.path.insert(0, str(project_root.resolve()))
+        from wrf_mpi_sender import send_subdomain
+        from gpuwrf.wrf_lbm_coupling.subdomain import extract_subdomain
+
+        target_domain = config.coupling_config.domain
+        interval_seconds = config.coupling_config.interval_seconds
+        target_dt = dt_by_domain[target_domain]
+
+        # Compute ratio_accumulated for target domain
+        target_idx = int(target_domain[1:])
+        ratio_accumulated = 1
+        cadence_run = Gen2Run(Path(config.input_dir))
+        for d in range(1, target_idx):
+            parent_name = f"d{d:02d}"
+            ratio_accumulated *= cadence_run.grid(parent_name).parent_grid_ratio
+
+        coupling_interval_steps = int(round(interval_seconds / target_dt))
+        temp_root_steps = int(round(float(config.hours) * 3600.0 / dt_by_domain[names[0]]))
+        temp_target_steps = temp_root_steps * ratio_accumulated
+        coupling_alarms = tuple(
+            step for step in range(coupling_interval_steps, temp_target_steps + 1, coupling_interval_steps)
+            if step <= temp_target_steps
+        )
+        coupling_alarm_schedule = {target_domain: coupling_alarms}
+
+        def _send_coupling_data_nested(domain: str, step: int, carry) -> None:
+            if domain != target_domain:
+                return
+            subdomain_data = extract_subdomain(carry, config.coupling_config)
+            send_subdomain(subdomain_data, step - 1)
+
+        def _make_coupling_callback(seg_start_target: int):
+            def seg_coupling_fn(domain: str, step: int, carry) -> None:
+                if domain != target_domain:
+                    return
+                global_step = seg_start_target + step
+                subdomain_data = extract_subdomain(carry, config.coupling_config)
+                send_subdomain(subdomain_data, global_step - 1)
+            return seg_coupling_fn
+
+        coupling_callback = _send_coupling_data_nested
+
     feedback_enabled = bool(config.feedback)
     tree = DomainTree.from_domains(hierarchy, bundles, feedback_enabled=feedback_enabled)
 
@@ -2599,6 +2657,28 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             else:
                 run_kwargs["prepared_runtime"] = prepared_runtime
                 run_kwargs["event_aware_fusion_k"] = event_aware_fusion_k
+                # Compute segment-relative coupling alarms if needed
+                if coupling_alarm_schedule is not None:
+                    target_domain = config.coupling_config.domain
+                    target_idx = int(target_domain[1:])
+                    ratio_accumulated = 1
+                    cadence_run_seg = Gen2Run(Path(config.input_dir))
+                    for d in range(1, target_idx):
+                        parent_name = f"d{d:02d}"
+                        ratio_accumulated *= cadence_run_seg.grid(parent_name).parent_grid_ratio
+                    seg_start_target = start * ratio_accumulated
+                    seg_coupling_alarms = {}
+                    for domain_name, alarms in coupling_alarm_schedule.items():
+                        seg_end_target = (start + seg) * ratio_accumulated
+                        seg_alarms = tuple(
+                            alarm - seg_start_target
+                            for alarm in alarms
+                            if seg_start_target < alarm <= seg_end_target
+                        )
+                        if seg_alarms:
+                            seg_coupling_alarms[domain_name] = seg_alarms
+                    run_kwargs["coupling"] = _make_coupling_callback(seg_start_target)
+                    run_kwargs["coupling_alarm_steps"] = seg_coupling_alarms if seg_coupling_alarms else None
             result = run_tree(
                 tree,
                 root_steps=seg,

@@ -59,6 +59,7 @@ AdvanceFn = Callable[[str, Any, int, int], Any]
 ForceFn = Callable[["DomainEdge", Any, Any], Any]
 FeedbackFn = Callable[["DomainEdge", Any, Any], Any]
 OutputFn = Callable[[str, int, Any], Any]
+CouplingFn = Callable[[str, int, Any], Any]
 AdaptiveDtFn = Callable[[str, Any, int], Any]
 MoveFn = Callable[["DomainEdge", Any, Any, int], Any]
 FusedSubstepFn = Callable[[Any, tuple[Any, ...], int, tuple[int, ...]], tuple[Any, tuple[Any, ...]]]
@@ -370,6 +371,8 @@ def run_domain_tree_callbacks(
     output: OutputFn | None = None,
     output_cadence_steps: dict[str, int] | None = None,
     output_alarm_steps: dict[str, tuple[int, ...]] | None = None,
+    coupling: CouplingFn | None = None,
+    coupling_alarm_steps: dict[str, tuple[int, ...]] | None = None,
     block_between: bool = True,
     root_sync_cadence: int | None = None,
     edge_lookup: Callable[[DomainNest], DomainEdge] | None = None,
@@ -482,6 +485,11 @@ def run_domain_tree_callbacks(
     output_alarm_sets = {
         name: frozenset(steps) for name, steps in output_alarm_steps.items()
     }
+    coupling_alarm_sets = {}
+    if coupling_alarm_steps:
+        coupling_alarm_sets = {
+            name: frozenset(steps) for name, steps in coupling_alarm_steps.items()
+        }
     dynamic_specs: dict[tuple[str, str], DomainNest] = {
         (edge.parent, edge.child): edge for edge in hierarchy.nests
     }
@@ -700,6 +708,16 @@ def run_domain_tree_callbacks(
                         steps_to_alarm = next_alarm - current_step
                         if 0 < steps_to_alarm <= remaining:
                             chunk = steps_to_alarm
+                # Check coupling alarms
+                if coupling is not None and name in coupling_alarm_sets:
+                    current_step = int(own_steps[name])
+                    coupling_alarms = coupling_alarm_steps[name]
+                    alarm_index = bisect_right(coupling_alarms, current_step)
+                    if alarm_index < len(coupling_alarms):
+                        next_coupling_alarm = coupling_alarms[alarm_index]
+                        steps_to_coupling = next_coupling_alarm - current_step
+                        if 0 < steps_to_coupling <= remaining:
+                            chunk = min(chunk, steps_to_coupling)
                 start_step = own_steps[name] + 1
                 maybe_adapt_dt(name, start_step)
                 out[name] = advance(name, out[name], int(start_step), int(chunk))
@@ -708,6 +726,11 @@ def run_domain_tree_callbacks(
                 if per_advance_block and hasattr(_state_from_carry(out[name]), "theta"):
                     jax.block_until_ready(_state_from_carry(out[name]).theta)
                 maybe_output(name)
+                # Trigger coupling callback if at alarm step
+                if coupling is not None and name in coupling_alarm_sets:
+                    if own_steps[name] in coupling_alarm_sets[name]:
+                        coupling(name, own_steps[name], out[name])
+                        events.append(("coupling", name, own_steps[name]))
                 remaining -= int(chunk)
             if depth == 0 and root_cadence:
                 _sync_all_domains()
@@ -2681,6 +2704,8 @@ def run_operational_domain_tree(
     output: OutputFn | None = None,
     output_cadence_steps: dict[str, int] | None = None,
     output_alarm_steps: dict[str, tuple[int, ...]] | None = None,
+    coupling: CouplingFn | None = None,
+    coupling_alarm_steps: dict[str, tuple[int, ...]] | None = None,
     block_between: bool = True,
     root_sync_cadence: int | None = None,
     carries: dict[str, Any] | None = None,
@@ -2756,6 +2781,8 @@ def run_operational_domain_tree(
         output=output,
         output_cadence_steps=output_cadence_steps,
         output_alarm_steps=output_alarm_steps,
+        coupling=coupling,
+        coupling_alarm_steps=coupling_alarm_steps,
         block_between=block_between,
         root_sync_cadence=root_sync_cadence,
         edge_lookup=lookup,
