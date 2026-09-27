@@ -218,6 +218,10 @@ def main():
                 _write_netcdf(current_data, step, output_dir)
                 print(f"  ✓ 写入 NetCDF: {output_dir}/received_step_{step:02d}.nc", flush=True)
 
+            # 最后 3 步额外写 wrfout 格式文件
+            if step >= args.steps - 3:
+                _write_wrfout(current_data, step, output_dir)
+
             # 保存历史（用于演化验证）
             history.append(current_data)
 
@@ -357,6 +361,78 @@ def _write_netcdf(data, step, output_dir):
                 units, desc = _FIELD_ATTRS[field_name]
                 var.units       = units
                 var.description = desc
+
+
+def _write_wrfout(data, step, output_dir):
+    """将接收到的数据写成 WRF 格式 NetCDF 文件
+
+    文件命名：wrfout_d03_SS（SS 为两位步数）
+    变量名使用 WRF 标准名（U, V, T, QVAPOR 等）
+    """
+    try:
+        from netCDF4 import Dataset
+    except ImportError:
+        print(f"    [警告] netCDF4 未安装，跳过 wrfout 写入", flush=True)
+        return
+
+    # 从标准质量场推断 nz, ny, nx
+    nz = ny = nx = None
+    for field in ('theta', 'qv'):
+        if field in data and data[field].ndim == 3:
+            nz, ny, nx = data[field].shape
+            break
+    if nz is None:
+        print(f"    [警告] 无法推断网格尺寸，跳过 wrfout 写入", flush=True)
+        return
+
+    # WRF 内部变量名映射
+    # theta 在 WRF 中存储为扰动位温 T' = theta - 300
+    _WRF_VARMAP = {
+        'u':     ('U',      'float32', 'm s-1',   'x-wind component'),
+        'v':     ('V',      'float32', 'm s-1',   'y-wind component'),
+        'theta': ('T',      'float32', 'K',       'perturbation potential temperature (theta-t0)'),
+        'qv':    ('QVAPOR', 'float32', 'kg kg-1', 'Water vapor mixing ratio'),
+    }
+
+    fname = output_dir / f'wrfout_d03_{step:02d}'
+    with Dataset(str(fname), 'w', format='NETCDF4') as ds:
+        # 全局属性（模仿 WRF 格式）
+        ds.TITLE  = f'WRF-GPU coupling output step {step}'
+        ds.coupling_step = step
+
+        # 创建维度
+        ds.createDimension('bottom_top',       nz)
+        ds.createDimension('bottom_top_stag',  nz + 1)
+        ds.createDimension('south_north',      ny)
+        ds.createDimension('south_north_stag', ny + 1)
+        ds.createDimension('west_east',        nx)
+        ds.createDimension('west_east_stag',   nx + 1)
+
+        # 维度推断：根据 shape 相对于 (nz,ny,nx) 的差异判断 stagger
+        def _wrf_dims(shape):
+            nz_s, ny_s, nx_s = shape
+            z = 'bottom_top_stag'  if nz_s == nz + 1 else 'bottom_top'
+            y = 'south_north_stag' if ny_s == ny + 1 else 'south_north'
+            x = 'west_east_stag'   if nx_s == nx + 1 else 'west_east'
+            return (z, y, x)
+
+        for field_name, arr in data.items():
+            if field_name not in _WRF_VARMAP:
+                continue
+            wrf_name, out_dtype, units, desc = _WRF_VARMAP[field_name]
+            dims = _wrf_dims(arr.shape)
+
+            out_arr = arr.astype(out_dtype)
+            # theta → T (扰动位温)
+            if field_name == 'theta':
+                out_arr = out_arr - 300.0
+
+            var = ds.createVariable(wrf_name, out_dtype, dims, zlib=True, complevel=4)
+            var[:] = out_arr
+            var.units       = units
+            var.description = desc
+
+    print(f"  ✓ wrfout 写入: {fname}", flush=True)
 
 
 def _verify_wrf_physics(data, step, history):
