@@ -137,13 +137,16 @@ def main():
 
     # 循环接收 N 个 coupling steps
     for step in range(args.steps):
-        # 设置超时保护（60s per step）
+        # 设置超时保护
+        # 第一个 step 需要更长超时（WRF 需要完成 AOT 加载 + 第一个时间步计算）
+        # 后续 step 使用标准 60s 超时
+        timeout_seconds = 180 if step == 0 else 60
         signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(60)
+        signal.alarm(timeout_seconds)
 
         try:
             print(f"{'='*70}", flush=True)
-            print(f"[Step {step}] 开始接收（超时 60s）", flush=True)
+            print(f"[Step {step}] 开始接收（超时 {timeout_seconds}s）", flush=True)
             print(f"{'='*70}", flush=True)
 
             # 1. 接收元数据（comm.recv，小写，pickle）
