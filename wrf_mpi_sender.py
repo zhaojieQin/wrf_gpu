@@ -59,6 +59,7 @@ class WRFMPISender:
             print(f"[WRFMPISender] Initialized: rank={self.rank}, dest_rank={self.dest_rank}")
             print(f"[WRFMPISender] CUDA-aware MPI: {self.has_cuda_aware_mpi}")
             print(f"[WRFMPISender] Threshold: {self.threshold_mb:.1f} MB (reserved)")
+            print(f"[WRFMPISender] VERSION: 2026-09-27-barrier-diagnostics", flush=True)
 
     def send_subdomain(self, subdomain_jax: dict, coupling_step: int) -> int:
         """发送 3D 子域到 LBM
@@ -97,8 +98,14 @@ class WRFMPISender:
         meta_tag = coupling_step * 1000
         print(f"[MPI-SEND] About to send metadata: step={coupling_step}, tag={meta_tag}, "
               f"dest={self.dest_rank}, fields={len(metadata)}", flush=True)
+        print(f"[MPI-SEND] Metadata dict content: {metadata}", flush=True)
         self.comm.send(metadata, dest=self.dest_rank, tag=meta_tag)
-        print(f"[MPI-SEND] Metadata sent successfully", flush=True)
+        print(f"[MPI-SEND] comm.send() returned", flush=True)
+
+        # Synchronization barrier to confirm receiver is ready
+        print(f"[MPI-SEND] Entering barrier after metadata send", flush=True)
+        self.comm.Barrier()
+        print(f"[MPI-SEND] Barrier passed - receiver confirmed metadata receipt", flush=True)
 
         # 3. 逐字段发送数据
         for field_idx, (field_name, jax_arr) in enumerate(subdomain_jax.items()):
