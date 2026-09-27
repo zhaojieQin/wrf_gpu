@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED: 请使用 coupling_adapter.py
 """WRF-LBM coupled run with MPI rank split.
 
 This script runs WRF and LBM in a single MPI job with proper rank assignment.

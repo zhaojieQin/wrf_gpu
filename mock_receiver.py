@@ -31,10 +31,8 @@ print(f"[DEBUG] mpi4py imported, rank={MPI.COMM_WORLD.Get_rank()}, size={MPI.COM
 import numpy as np
 print("[DEBUG] numpy imported", flush=True)
 
-import cupy as cp
-print(f"[DEBUG] cupy imported, device={cp.cuda.runtime.getDevice()}", flush=True)
-
-print("[DEBUG] all imports done", flush=True)
+# Defer cupy import to main() to allow GPU assignment in parent process
+print("[DEBUG] all imports done (cupy deferred)", flush=True)
 
 
 class TimeoutError(Exception):
@@ -47,21 +45,46 @@ def timeout_handler(signum, frame):
     raise TimeoutError("接收超时（60s）")
 
 
-def main():
+def main(steps=None):
+    """LBM receiver main entry point.
+
+    Args:
+        steps: Number of coupling steps to receive. If None, read from sys.argv.
+    """
+    global cp  # Make cupy available to helper functions
+
     print("[DEBUG] entering main()", flush=True)
-    parser = argparse.ArgumentParser(description="LBM MPI 接收端测试")
-    parser.add_argument('--steps', type=int, default=20,
-                       help='接收的耦合步数（默认 20，完整 1h 测试）')
-    parser.add_argument('--verify-gpu', action='store_true',
-                       help='将数据传输到 GPU 验证完整性')
-    parser.add_argument('--verify-wrf', action='store_true',
-                       help='验证 WRF 数据物理合理性（范围、常数、演化）')
-    parser.add_argument('--write-netcdf', action='store_true',
-                       help='将每个 step 数据写入 NetCDF 文件')
-    parser.add_argument('--output-dir', type=str, default='./received_nc',
-                       help='NetCDF 输出目录（默认 ./received_nc）')
-    args = parser.parse_args()
-    print(f"[DEBUG] args parsed: steps={args.steps}", flush=True)
+
+    # Import cupy after GPU assignment
+    import cupy as cp
+    print(f"[DEBUG] cupy imported, device={cp.cuda.runtime.getDevice()}", flush=True)
+
+    # Parse arguments or use provided steps
+    if steps is None:
+        parser = argparse.ArgumentParser(description="LBM MPI 接收端测试")
+        parser.add_argument('--steps', type=int, default=20,
+                           help='接收的耦合步数（默认 20，完整 1h 测试）')
+        parser.add_argument('--verify-gpu', action='store_true',
+                           help='将数据传输到 GPU 验证完整性')
+        parser.add_argument('--verify-wrf', action='store_true',
+                           help='验证 WRF 数据物理合理性（范围、常数、演化）')
+        parser.add_argument('--write-netcdf', action='store_true',
+                           help='将每个 step 数据写入 NetCDF 文件')
+        parser.add_argument('--output-dir', type=str, default='./received_nc',
+                           help='NetCDF 输出目录（默认 ./received_nc）')
+        args = parser.parse_args()
+        print(f"[DEBUG] args parsed: steps={args.steps}", flush=True)
+    else:
+        # Direct invocation with steps parameter
+        class Args:
+            pass
+        args = Args()
+        args.steps = steps
+        args.verify_gpu = False
+        args.verify_wrf = True
+        args.write_netcdf = True
+        args.output_dir = './received_nc_swift'
+        print(f"[DEBUG] using provided steps={steps}", flush=True)
 
     comm = MPI.COMM_WORLD
     print(f"[DEBUG] comm obtained: {comm}", flush=True)
@@ -247,6 +270,18 @@ def main():
     print(f"  总步数: {args.steps}", flush=True)
     print(f"  ✓ 通道验证通过", flush=True)
     print(f"{'='*70}", flush=True)
+
+    # EOF handshake
+    EOF_TAG = 999998
+    print(f"[LBM Receiver] Waiting for EOF signal (tag={EOF_TAG})", flush=True)
+    eof = comm.recv(source=0, tag=EOF_TAG)
+    assert eof.get("eof") is True, f"Expected EOF signal, got {eof}"
+    print(f"[LBM Receiver] EOF received: {eof}", flush=True)
+
+    # Send ACK
+    ack_msg = {"ack": True, "total_received": args.steps}
+    comm.send(ack_msg, dest=0, tag=EOF_TAG)
+    print(f"[LBM Receiver] ACK sent: {ack_msg}", flush=True)
 
 
 def _get_dims_for_shape(shape, nz, ny, nx):
@@ -475,4 +510,13 @@ def _verify_wrf_physics(data, step, history):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"[Rank 1] FATAL: {e}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc()
+        if MPI.Is_initialized() and not MPI.Is_finalized():
+            MPI.COMM_WORLD.Abort(1)
+        else:
+            sys.exit(1)

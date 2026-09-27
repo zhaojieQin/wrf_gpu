@@ -2865,6 +2865,15 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             except BaseException:
                 if sys.exc_info()[0] is None:
                     raise
+
+        # Release GPU memory and XLA compilation cache
+        import gc
+        gc.collect()
+        try:
+            import jax
+            jax.clear_caches()
+        except Exception:
+            pass
     result = DomainTreeResult(
         carries=carries or {},
         states=final_states,
