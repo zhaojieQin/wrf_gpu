@@ -57,7 +57,7 @@ try:
                     'z_range': (0, -1),
                     'y_range': (0, -1),
                     'x_range': (0, -1),
-                    'fields': ['u', 'v', 'theta', 'qv'],
+                    'fields': ['u', 'v', 'w', 'theta', 'ph'],
                 },
             },
         )

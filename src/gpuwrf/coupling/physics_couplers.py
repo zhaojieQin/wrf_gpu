@@ -2333,6 +2333,31 @@ def surface_layer_diagnostics(state: State, grid: GridSpec | None = None) -> Sur
     )
 
 
+def get_surface_diagnostics(state, grid=None):
+    """Public API: surface-layer diagnostics for the coupling layer.
+
+    Returns SurfaceLayerDiagnostics containing psim, znt (roughness length),
+    and fluxes.ustar.  All fields are JAX arrays on the operational device;
+    callers in the CPU coupling path should transfer with jax.device_get().
+
+    This is a thin wrapper around the private ``_surface_column_view`` +
+    ``surface_layer_with_diagnostics`` pipeline, exposed here so that
+    modules outside ``coupling/`` (e.g. ``wrf_lbm_coupling/``) do not need
+    to import private helpers directly.
+
+    Parameters
+    ----------
+    state : State  WRF model state (post-surface-adapter, so ustar is written)
+    grid  : GridSpec | None  domain grid (pass for theta_m / hydrostatic-p
+            corrections; None falls back to simplified column construction)
+
+    Returns
+    -------
+    SurfaceLayerDiagnostics  (NamedTuple; see physics/surface_layer.py)
+    """
+    return surface_layer_with_diagnostics(_surface_column_view(state, grid))
+
+
 def rrtmg_radiation_diagnostics(
     state: State,
     grid: GridSpec | None = None,

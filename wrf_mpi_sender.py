@@ -109,8 +109,13 @@ class WRFMPISender:
 
         # 3. 逐字段发送数据
         for field_idx, (field_name, jax_arr) in enumerate(subdomain_jax.items()):
-            # JAX → CuPy（显式拷贝，避免 GH200 共享内存下 DLPack 生命周期问题）
-            cp_arr = cp.array(jax_arr)
+            # JAX array → CuPy（显式拷贝，避免 GH200 共享内存下 DLPack 生命周期问题）
+            # numpy arrays (e.g. ustar/roughness_m/psim from compute_surface_diagnostics)
+            # are transferred directly via cp.asarray, skipping the JAX path
+            if isinstance(jax_arr, np.ndarray):
+                cp_arr = cp.asarray(jax_arr)
+            else:
+                cp_arr = cp.array(jax_arr)
 
             # GPU → Host（使用标准 NumPy array）
             # 注意：没有使用 pinned memory，但对于 ~7MB 数据性能损失可接受

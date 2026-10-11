@@ -2459,6 +2459,10 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         coupling_count = [0]  # Mutable counter for closure
         coupling_log_interval = 10 if not coupling_verbose else 1
 
+        # Capture target domain grid once for MOST extrapolation (Path 2).
+        # bundles[target_domain] is fully initialised at this point (line ~723).
+        target_grid = bundles[target_domain].grid
+
         def _make_coupling_callback(seg_start_target: int):
             def seg_coupling_fn(domain: str, step: int, carry) -> None:
                 if domain != target_domain:
@@ -2469,6 +2473,31 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
 
                 subdomain_data = extract_subdomain(carry, config.coupling_config)
                 print(f"[DEBUG] extract_subdomain returned: {len(subdomain_data)} fields", flush=True)
+
+                # Path 2: append MOST surface diagnostics (ustar, z0, psim)
+                # These are 2-D (ny, nx) numpy arrays — wrf_mpi_sender handles
+                # numpy inputs via cp.asarray(), no JAX roundtrip needed.
+                from gpuwrf.wrf_lbm_coupling.surface_diagnostics import (
+                    compute_surface_diagnostics,
+                )
+                most_fields = compute_surface_diagnostics(carry, target_grid)
+                # Sanity-check shapes before insertion
+                _ny, _nx = most_fields.ustar.shape
+                assert most_fields.roughness_m.shape == (_ny, _nx), (
+                    f"roughness_m shape {most_fields.roughness_m.shape} != ({_ny},{_nx})"
+                )
+                assert most_fields.psim.shape == (_ny, _nx), (
+                    f"psim shape {most_fields.psim.shape} != ({_ny},{_nx})"
+                )
+                subdomain_data['ustar']       = most_fields.ustar
+                subdomain_data['roughness_m'] = most_fields.roughness_m
+                subdomain_data['psim']        = most_fields.psim
+                print(
+                    f"[DEBUG] MOST fields appended: ustar/roughness_m/psim shape=({_ny},{_nx}), "
+                    f"ustar range=[{most_fields.ustar.min():.4f}, {most_fields.ustar.max():.4f}], "
+                    f"psim range=[{most_fields.psim.min():.4f}, {most_fields.psim.max():.4f}]",
+                    flush=True,
+                )
 
                 # Logging
                 coupling_count[0] += 1
