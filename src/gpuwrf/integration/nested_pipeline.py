@@ -2520,9 +2520,14 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 if not coupling_dry_run:
                     # Use sequential coupling count (0, 1, 2, ...) for MPI tags
                     # to match receiver's expectation: step in range(total_couplings)
-                    print(f"[DEBUG] about to send_subdomain, count={coupling_count[0]}", flush=True)
+                    # Physical time = global_step * target_dt (most accurate, avoids
+                    # accumulated rounding from coupling_count * interval_seconds)
+                    simulation_time_s = global_step * target_dt
+                    print(f"[DEBUG] about to send_subdomain, count={coupling_count[0]}, "
+                          f"t_wrf={simulation_time_s:.3f}s", flush=True)
                     try:
-                        mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1)
+                        mpi_sender.send_subdomain(subdomain_data, coupling_count[0] - 1,
+                                                  simulation_time_s=simulation_time_s)
                         print(f"[DEBUG] send_subdomain returned, count={coupling_count[0]}", flush=True)
                         # Wait for non-blocking Isend to complete before continuing
                         mpi_sender.wait_all()

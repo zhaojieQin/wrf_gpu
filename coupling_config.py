@@ -7,6 +7,6 @@ Single source of truth for coupling parameters.
 HOURS = 1
 
 # Coupling interval (seconds)
-INTERVAL_SECONDS = 10
+INTERVAL_SECONDS = 5
 
-# LBM steps = HOURS * 3600 / INTERVAL_SECONDS = 1 * 3600 / 10 = 360
+# LBM steps = HOURS * 3600 / INTERVAL_SECONDS = 1 * 3600 / 5 = 720

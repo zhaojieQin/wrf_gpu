@@ -61,12 +61,13 @@ class WRFMPISender:
             print(f"[WRFMPISender] Threshold: {self.threshold_mb:.1f} MB (reserved)")
             print(f"[WRFMPISender] VERSION: 2026-09-27-barrier-diagnostics", flush=True)
 
-    def send_subdomain(self, subdomain_jax: dict, coupling_step: int) -> int:
+    def send_subdomain(self, subdomain_jax: dict, coupling_step: int,
+                       simulation_time_s: float = 0.0) -> int:
         """发送 3D 子域到 LBM
 
         数据流：
         1. JAX array → CuPy array（显式拷贝）
-        2. 发送元数据（字段名、shape、dtype）
+        2. 发送元数据（字段名、shape、dtype、物理时间戳）
         3. 逐字段传输：
            - 分配 pinned host memory
            - GPU → Host（同步 get）
@@ -75,6 +76,8 @@ class WRFMPISender:
         Args:
             subdomain_jax: 字段名 -> JAX array 字典
             coupling_step: 耦合步数（用于 MPI tag 编码）
+            simulation_time_s: 当前 WRF 物理时间（秒），写入 metadata['__wrf_time_s']
+                供 LBM 侧做时间插值。默认 0.0（向后兼容）。
 
         Returns:
             发送的字段数量
@@ -85,8 +88,8 @@ class WRFMPISender:
         if len(subdomain_jax) > 999:
             raise ValueError(f"字段数量 {len(subdomain_jax)} 超过上限 999")
 
-        # 1. 准备元数据
-        metadata = {}
+        # 1. 准备元数据（含物理时间戳）
+        metadata = {'__wrf_time_s': float(simulation_time_s)}
         for field_name, jax_arr in subdomain_jax.items():
             metadata[field_name] = {
                 'shape': jax_arr.shape,
