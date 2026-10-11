@@ -227,10 +227,14 @@ def _rank1_receive_and_validate():
     # Mirror the barrier that WRFMPISender inserts after metadata send
     _comm.Barrier()
 
+    # Extract control keys before iterating fields
+    wrf_time_s = metadata.get('__wrf_time_s', 0.0)
+    print(f"\n[Rank 1] wrf_time_s={wrf_time_s:.3f}s", flush=True)
+
     received = {}
     meta_dtypes = {}   # expected dtype from metadata (used for dtype consistency check)
-    for field_idx, field_name in enumerate(metadata):
-        info = metadata[field_name]
+    field_items = [(k, v) for k, v in metadata.items() if not k.startswith('__')]
+    for field_idx, (field_name, info) in enumerate(field_items):
         shape = tuple(info["shape"])
         dtype = np.dtype(info["dtype"])
         meta_dtypes[field_name] = dtype

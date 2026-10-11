@@ -189,8 +189,13 @@ def main(steps=None):
             # 当前步数据
             current_data = {}
 
-            # 2. 逐字段接收数据
-            for field_idx, (field_name, field_meta) in enumerate(metadata.items()):
+            # 提取控制键（不对应 MPI 数据包）
+            wrf_time_s = metadata.get('__wrf_time_s', step * float(getattr(args, 'interval_seconds', 5)))
+            print(f"[DEBUG] wrf_time_s={wrf_time_s:.3f}s", flush=True)
+
+            # 2. 逐字段接收数据（跳过以 __ 开头的控制键）
+            field_items = [(k, v) for k, v in metadata.items() if not k.startswith('__')]
+            for field_idx, (field_name, field_meta) in enumerate(field_items):
                 shape = field_meta['shape']
                 dtype_str = field_meta['dtype']
                 size_mb = field_meta['size_mb']
