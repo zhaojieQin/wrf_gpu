@@ -228,10 +228,12 @@ def _rank1_receive_and_validate():
     _comm.Barrier()
 
     received = {}
+    meta_dtypes = {}   # expected dtype from metadata (used for dtype consistency check)
     for field_idx, field_name in enumerate(metadata):
         info = metadata[field_name]
         shape = tuple(info["shape"])
         dtype = np.dtype(info["dtype"])
+        meta_dtypes[field_name] = dtype
         buf = np.empty(shape, dtype=dtype)
         data_tag = step * 1000 + field_idx + 1
         _comm.Recv(buf, source=0, tag=data_tag)
@@ -248,20 +250,22 @@ def _rank1_receive_and_validate():
     _comm.send({"ack": True}, dest=0, tag=_EOF_TAG)
     print("[Rank 1] EOF handshake complete", flush=True)
 
-    _validate_rank1(received)
+    _validate_rank1(received, meta_dtypes)
     return received
 
 
-def _validate_rank1(received: dict):
+def _validate_rank1(received: dict, meta_dtypes: dict):
     """Post-receive assertions on all 8 fields."""
     # 1. All expected fields present
     for name in _ALL_FIELDS:
         assert name in received, f"[Rank 1] Missing field '{name}'"
 
-    # 2. dtype: everything should arrive as float64 (sender uses cp.asnumpy on float64 arrays)
+    # 2. dtype consistency: received array dtype must match what metadata advertised.
+    # Do NOT hardcode float64 — u/v/theta are fp32 in WRF-GPU; w/ph/ustar/roughness_m/psim are fp64.
     for name, arr in received.items():
-        assert arr.dtype == np.float64, (
-            f"[Rank 1] '{name}' has dtype {arr.dtype}, expected float64"
+        expected_dtype = meta_dtypes[name]
+        assert arr.dtype == expected_dtype, (
+            f"[Rank 1] '{name}' dtype mismatch: metadata says {expected_dtype}, got {arr.dtype}"
         )
 
     # 3. NaN check
