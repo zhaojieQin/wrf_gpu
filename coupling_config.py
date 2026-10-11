@@ -6,7 +6,11 @@ Single source of truth for coupling parameters.
 # Forecast duration (hours)
 HOURS = 1
 
-# Coupling interval (seconds)
-INTERVAL_SECONDS = 5
+# d03 timestep (seconds): time_step=18 / (ratio_d02=3 * ratio_d03=3) = 2s
+# Coupling fires every d03 timestep, so interval = target_dt
+D03_DT_SECONDS = 2
 
-# LBM steps = HOURS * 3600 / INTERVAL_SECONDS = 1 * 3600 / 5 = 720
+# Coupling interval (seconds) — kept for reference, not used for alarm scheduling
+INTERVAL_SECONDS = D03_DT_SECONDS
+
+# LBM steps = HOURS * 3600 / D03_DT_SECONDS = 1 * 3600 / 2 = 1800

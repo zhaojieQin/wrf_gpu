@@ -39,7 +39,7 @@ try:
     if rank == 0:
         print("[Rank 0] Starting WRF GPU forecast...", flush=True)
         from gpuwrf.integration.nested_pipeline import NestedPipelineConfig, execute_nested_pipeline
-        from coupling_config import HOURS, INTERVAL_SECONDS
+        from coupling_config import HOURS, INTERVAL_SECONDS, D03_DT_SECONDS
 
         config = NestedPipelineConfig(
             input_dir=Path('/home/zhaqi746/code/wrf_gpu/examples/SWiFT'),
@@ -76,10 +76,10 @@ try:
 
     elif rank == 1:
         print("[Rank 1] Starting LBM MPI receiver...", flush=True)
-        from coupling_config import HOURS, INTERVAL_SECONDS
+        from coupling_config import HOURS, D03_DT_SECONDS
 
-        steps = int(HOURS * 3600 / INTERVAL_SECONDS)
-        print(f"[Rank 1] Computed steps={steps} (HOURS={HOURS}, INTERVAL_SECONDS={INTERVAL_SECONDS})", flush=True)
+        steps = int(HOURS * 3600 / D03_DT_SECONDS)
+        print(f"[Rank 1] Computed steps={steps} (HOURS={HOURS}, D03_DT_SECONDS={D03_DT_SECONDS})", flush=True)
 
         # Import and call main with computed steps
         import mock_receiver

@@ -2440,7 +2440,8 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
             domain_name = f"d{d:02d}"
             ratio_accumulated *= cadence_run.grid(domain_name).parent_grid_ratio
 
-        coupling_interval_steps = int(round(interval_seconds / target_dt))
+        # Always couple at every d03 timestep, regardless of interval_seconds
+        coupling_interval_steps = 1
         temp_root_steps = int(round(float(config.hours) * 3600.0 / dt_by_domain[names[0]]))
         temp_target_steps = temp_root_steps * ratio_accumulated
         coupling_alarms = tuple(
