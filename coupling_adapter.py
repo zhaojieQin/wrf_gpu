@@ -111,15 +111,20 @@ try:
             terrain_height = np.asarray(ds.variables['HGT'][0], dtype=np.float64)
             dx_wrf = float(ds.DX)
             dy_wrf = float(ds.DY)
-            # ZNT: (1, ny, nx) roughness length (m) — land-surface mean
-            znt = np.asarray(ds.variables['ZNT'][0], dtype=np.float64)
-            # Average over all grid points (land + water); land-only mask
-            # not strictly needed — a global mean is accurate enough for a
-            # quasi-static roughness parameter
-            z0_mean = float(znt.mean())
+            # ZNT: (1, ny, nx) roughness length (m) — land-surface mean.
+            # wrfinput from real.exe may not carry ZNT (it is a model-computed
+            # diagnostic); fall back to the VF ground roughness from abl.cfg,
+            # which is what the LBM stress BC actually uses.
+            if 'ZNT' in ds.variables:
+                znt = np.asarray(ds.variables['ZNT'][0], dtype=np.float64)
+                z0_mean = float(znt.mean())
+                z0_source = 'wrfinput_d03/ZNT'
+            else:
+                z0_mean = float(lbm_cfg.z0)
+                z0_source = 'abl.cfg RoughnessLength (ZNT not in wrfinput_d03)'
 
         print(f"[Rank 1] wrfinput_d03: terrain shape={terrain_height.shape}  "
-              f"dx={dx_wrf}m  dy={dy_wrf}m  z0_mean={z0_mean:.4f}m", flush=True)
+              f"dx={dx_wrf}m  dy={dy_wrf}m  z0_mean={z0_mean:.4f}m  ({z0_source})", flush=True)
 
         static_ctx = WRFStaticContext(
             terrain_height=terrain_height,
