@@ -57,7 +57,8 @@ try:
                     'z_range': (0, -1),
                     'y_range': (0, -1),
                     'x_range': (0, -1),
-                    'fields': ['u', 'v', 'w', 'theta', 'ph', 'hfx'],
+                    # hfx is appended by nested_pipeline from surface diagnostics
+                    'fields': ['u', 'v', 'w', 'theta', 'ph'],
                 },
             },
         )
