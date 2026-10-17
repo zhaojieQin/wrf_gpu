@@ -381,7 +381,9 @@ def make_wrf_initial_condition(
     - 查找表节点与 VF 网格一致：x_i = -dx/2 + i*dx，共 round(L/dx)+2 个点；
       ic 内按最近的表节点取值。
     - u, v, w 除以 velocity_ratio（= dx/dt）转为 LBM 无量纲速度
-    - rho 固定返回 1.0（VF 不可压缩参考态）
+    - rho 返回 0.0：VF 初始条件的 rho 是密度偏差 Δρ（GridProvider 默认 0、
+      initialization_functions.log_law 也返回 0）。返回 1.0 会使总密度变为 2，
+      而速度边界的动量项 6·w·u 按 ρ=1 推导，边界处实际速度会被减半。
     """
     wrf_data = make_wrf_column_data(received_step0, static_ctx)
     most_fields = extract_most_fields(received_step0)
@@ -397,7 +399,7 @@ def make_wrf_initial_condition(
                 target_z_agl=np.array([z]),
                 most_fields=most_fields,
             )
-            return (1.0, float(f.u[0]) / velocity_ratio,
+            return (0.0, float(f.u[0]) / velocity_ratio,
                     float(f.v[0]) / velocity_ratio, float(f.w[0]) / velocity_ratio)
 
         return ic
@@ -429,6 +431,6 @@ def make_wrf_initial_condition(
         ix = min(max(int(round((x - x0) * inv_dx)), 0), nx_l - 1)
         iy = min(max(int(round((y - y0) * inv_dx)), 0), ny_l - 1)
         iz = min(max(int(round((z - z0) * inv_dx)), 0), nz_l - 1)
-        return (1.0, float(u_tab[iy, ix, iz]), float(v_tab[iy, ix, iz]), float(w_tab[iy, ix, iz]))
+        return (0.0, float(u_tab[iy, ix, iz]), float(v_tab[iy, ix, iz]), float(w_tab[iy, ix, iz]))
 
     return ic

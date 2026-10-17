@@ -358,11 +358,11 @@ class TestMakeWRFInitialCondition:
         result = ic(0.0, 0.0, 500.0)
         assert len(result) == 4
 
-    def test_rho_is_one(self):
-        """rho 固定为 1.0（VF 不可压缩参考态）。"""
+    def test_rho_is_zero_deviation(self):
+        """rho 是 VF 的密度偏差 Δρ，参考态为 0.0（不是总密度 1.0）。"""
         ic = self._make_ic()
         rho, vx, vy, vz = ic(0.0, 0.0, 1000.0)
-        assert rho == pytest.approx(1.0)
+        assert rho == pytest.approx(0.0)
 
     def test_velocity_in_lattice_units(self):
         """u_phys=5 m/s, velocity_ratio=100 → vx ≈ 0.05。"""
