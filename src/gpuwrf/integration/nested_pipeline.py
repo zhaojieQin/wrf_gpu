@@ -2478,10 +2478,12 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 # Path 2: append MOST surface diagnostics (ustar, z0, psim)
                 # These are 2-D (ny, nx) numpy arrays — wrf_mpi_sender handles
                 # numpy inputs via cp.asarray(), no JAX roundtrip needed.
+                # hfx (W m^-2) comes from the same surface-layer snapshot;
+                # State has no hfx attribute (only kinematic theta_flux).
                 from gpuwrf.wrf_lbm_coupling.surface_diagnostics import (
-                    compute_surface_diagnostics,
+                    compute_surface_fields,
                 )
-                most_fields = compute_surface_diagnostics(carry, target_grid)
+                most_fields, hfx_np = compute_surface_fields(carry, target_grid)
                 # Sanity-check shapes before insertion
                 _ny, _nx = most_fields.ustar.shape
                 assert most_fields.roughness_m.shape == (_ny, _nx), (
@@ -2493,6 +2495,10 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 subdomain_data['ustar']       = most_fields.ustar
                 subdomain_data['roughness_m'] = most_fields.roughness_m
                 subdomain_data['psim']        = most_fields.psim
+                assert hfx_np.shape == (_ny, _nx), (
+                    f"hfx shape {hfx_np.shape} != ({_ny},{_nx})"
+                )
+                subdomain_data['hfx']         = hfx_np
                 print(
                     f"[DEBUG] MOST fields appended: ustar/roughness_m/psim shape=({_ny},{_nx}), "
                     f"ustar range=[{most_fields.ustar.min():.4f}, {most_fields.ustar.max():.4f}], "

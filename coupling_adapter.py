@@ -80,7 +80,9 @@ try:
         # 必须在任何 pyfluids 导入 / MPICommunicator 实例化之前设置。
         os.environ['VF_MPI_USE_COMM_SELF'] = '1'
         print("[Rank 1] Starting LBM coupled simulation...", flush=True)
-        from coupling_config import HOURS, D03_DT_SECONDS
+        from coupling_config import (
+            HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
+        )
 
         # ── lbm_adapter imports ──────────────────────────────────────────
         import numpy as np
@@ -190,6 +192,12 @@ try:
         # ── VirtualFluids 仿真构造（含 WRF IC）───────────────────────────
         print("[Rank 1] Setting up VirtualFluids simulation...", flush=True)
         sim, para, lbm_cfg = setup_vf_simulation(lbm_cfg, initial_condition_fn=ic)
+        # 只输出最开始的几次 VTK（abl.cfg 的 tOut 远大于模拟时长，否则一次都不输出）
+        para.set_timestep_out(LBM_OUTPUT_EVERY_STEPS)
+        lbm_output_until_step = LBM_OUTPUT_EVERY_STEPS * LBM_OUTPUT_COUNT
+        print(f"[Rank 1] LBM VTK output: every {LBM_OUTPUT_EVERY_STEPS} steps, "
+              f"{LBM_OUTPUT_COUNT} outputs, off after step {lbm_output_until_step} "
+              f"(t≈{lbm_output_until_step * lbm_cfg.dt:.1f}s) -> {lbm_cfg.output_path}", flush=True)
         sim.init_timers()
         print("[Rank 1] VirtualFluids simulation initialized.", flush=True)
 
@@ -243,6 +251,8 @@ try:
             dt_lbm=lbm_cfg.dt,
             level=0,
             start_step=1,
+            para=para,
+            output_until_step=lbm_output_until_step,
         )
 
         sim.finalize()

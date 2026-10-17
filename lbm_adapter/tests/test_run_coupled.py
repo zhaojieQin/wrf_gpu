@@ -215,3 +215,18 @@ class TestRunLbmCoupled:
         run_lbm_coupled(sim, db, loop, n_steps=1, dt_lbm=DT_LBM, start_step=1)
         u_called = sim.update_velocity_bc.call_args[0][0]
         np.testing.assert_allclose(u_called, 0.5, rtol=1e-10)
+
+
+class TestOutputLimit:
+    def test_output_switched_off_after_until_step(self):
+        sim, para = _make_sim(), MagicMock()
+        run_lbm_coupled(sim, _make_db(), _make_recv_loop(), n_steps=10, dt_lbm=0.1,
+                        para=para, output_until_step=4)
+        para.set_timestep_out.assert_called_once_with(0)
+        # switched off right after step 4 was computed (output for step 4 still written)
+        assert sim.calculate_timestep.call_args_list[3][0][0] == 4
+
+    def test_no_output_change_by_default(self):
+        para = MagicMock()
+        run_lbm_coupled(_make_sim(), _make_db(), _make_recv_loop(), n_steps=5, dt_lbm=0.1)
+        para.set_timestep_out.assert_not_called()

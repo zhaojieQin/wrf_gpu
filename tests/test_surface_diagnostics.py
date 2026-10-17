@@ -275,3 +275,42 @@ class TestGetSurfaceDiagnosticsWrapper:
             get_surface_diagnostics(state)
 
         mock_view.assert_called_once_with(state, None)
+
+
+# ---------------------------------------------------------------------------
+# Tests: compute_surface_fields (MOST fields + hfx from the same snapshot)
+# ---------------------------------------------------------------------------
+
+class TestComputeSurfaceFields:
+    def _run(self, ny=4, nx=5, hfx_val=42.0):
+        from gpuwrf.wrf_lbm_coupling.surface_diagnostics import compute_surface_fields
+
+        fake_diag = _make_diag(ny, nx)
+        fake_diag.hfx = np.full((ny, nx), hfx_val, dtype=np.float32)
+        carry = _make_carry(ny, nx)
+        with (
+            patch(
+                "gpuwrf.wrf_lbm_coupling.surface_diagnostics.get_surface_diagnostics",
+                return_value=fake_diag,
+            ),
+            patch(
+                "gpuwrf.wrf_lbm_coupling.surface_diagnostics.jax.device_get",
+                side_effect=_fake_jax_device_get,
+            ),
+        ):
+            return compute_surface_fields(carry, MagicMock())
+
+    def test_returns_most_fields_and_hfx(self):
+        from gpuwrf.wrf_lbm_coupling.vertical_interp import MOSTSurfaceFields
+
+        most_fields, hfx = self._run(hfx_val=42.0)
+        assert isinstance(most_fields, MOSTSurfaceFields)
+        assert hfx.shape == (4, 5)
+        assert hfx.dtype == np.float64
+        np.testing.assert_allclose(hfx, 42.0)
+
+    def test_most_fields_match_compute_surface_diagnostics(self):
+        most_fields, _ = self._run()
+        np.testing.assert_allclose(most_fields.ustar, 0.3)
+        np.testing.assert_allclose(most_fields.roughness_m, 0.05)
+        np.testing.assert_allclose(most_fields.psim, -0.2)

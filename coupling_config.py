@@ -14,3 +14,8 @@ D03_DT_SECONDS = 2
 INTERVAL_SECONDS = D03_DT_SECONDS
 
 # LBM steps = HOURS * 3600 / D03_DT_SECONDS = 1 * 3600 / 2 = 1800
+
+# LBM VTK output: write only the first few outputs, then switch output off.
+# Each output is ~1-2 GB (≈21.9M nodes). 15 LBM steps ≈ one WRF frame (2 s).
+LBM_OUTPUT_EVERY_STEPS = 15
+LBM_OUTPUT_COUNT = 5

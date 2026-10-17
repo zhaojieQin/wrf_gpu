@@ -70,6 +70,32 @@ def compute_surface_diagnostics(carry, grid) -> MOSTSurfaceFields:
     ustar_np, z0_np, psim_np = jax.device_get(
         (diag.fluxes.ustar, diag.znt, diag.psim)
     )
+    return _to_most_fields(ustar_np, z0_np, psim_np, carry)
+
+
+def compute_surface_fields(carry, grid) -> tuple[MOSTSurfaceFields, np.ndarray]:
+    """Like :func:`compute_surface_diagnostics`, plus the sensible heat flux.
+
+    hfx comes from the same ``SurfaceLayerDiagnostics`` snapshot as ustar/psim
+    (``State`` itself carries only the kinematic ``theta_flux``, not HFX).
+
+    Returns
+    -------
+    most_fields : MOSTSurfaceFields  ustar, roughness_m, psim as (ny, nx)
+    hfx         : (ny, nx) float64   W m⁻², upward positive
+    """
+    diag = get_surface_diagnostics(carry.state, grid)
+
+    # Transfer only the 4 fields we need — one dispatch, not four
+    ustar_np, z0_np, psim_np, hfx_np = jax.device_get(
+        (diag.fluxes.ustar, diag.znt, diag.psim, diag.hfx)
+    )
+    most_fields = _to_most_fields(ustar_np, z0_np, psim_np, carry)
+    return most_fields, np.asarray(hfx_np, dtype=np.float64)
+
+
+def _to_most_fields(ustar_np, z0_np, psim_np, carry) -> MOSTSurfaceFields:
+    """float64 cast + psim NaN guard + debug consistency check."""
     ustar_np = np.asarray(ustar_np, dtype=np.float64)
     z0_np    = np.asarray(z0_np,    dtype=np.float64)
     psim_np  = np.asarray(psim_np,  dtype=np.float64)
