@@ -44,9 +44,8 @@ from lbm_adapter.wrf_to_lbm import (
 )
 from lbm_adapter.unit_convert import LBMReference, apply_unit_conversions
 from lbm_adapter.vertical_interp import (
-    compute_z_w,
-    compute_z_mass,
-    _interp_column_1d,
+    interp_wrf_to_lbm_nodes_bilinear,
+    build_lbm_grid_table,
 )
 
 
@@ -319,6 +318,9 @@ def make_wrf_initial_condition(
     ref: LBMReference,
     lbm_origin_x: float = 0.0,
     lbm_origin_y: float = 0.0,
+    domain_length_x: float | None = None,
+    domain_length_y: float | None = None,
+    domain_length_z: float | None = None,
 ):
     """返回用 WRF step=0 三维场构造的 VF 初始条件函数。
 
@@ -327,11 +329,13 @@ def make_wrf_initial_condition(
 
     Parameters
     ----------
-    received_step0  : dict  WRF step=0 数据（含 'u','v','w','theta','ph'）
+    received_step0  : dict  WRF step=0 数据（含 'u','v','w','theta','ph'，可选 MOST 场）
     static_ctx      : WRFStaticContext（terrain_height, dx_wrf, dy_wrf）
     ref             : LBMReference（dx_lbm, dt_lbm）
     lbm_origin_x    : float  LBM 域西南角在 WRF 坐标系中的 x 偏移（m），默认 0
     lbm_origin_y    : float  LBM 域西南角在 WRF 坐标系中的 y 偏移（m），默认 0
+    domain_length_x/y/z : float | None  LBM 域尺寸（m）。三者都给定时，预先在 LBM
+                      网格上算好查找表（快）；否则每次调用单点插值（慢，仅用于测试）。
 
     Returns
     -------
@@ -341,50 +345,60 @@ def make_wrf_initial_condition(
 
     Notes
     -----
-    - WRF 场在构造时预先计算，闭包里只做查表和列插值。
-    - 水平：最近邻查找（与 interp_field_to_heights 一致）
-    - 垂直：线性插值，超出范围夹紧（clamp）
-    - z AGL → MSL：加当前格点地形高度
+    - 与边界条件使用同一套插值（interp_wrf_to_lbm_nodes_bilinear）：
+      u/v 去交错，水平双线性，每个 WRF 格柱按离地高度线性插值，
+      最低质量层以下用 MOST（若 received_step0 带 ustar/roughness_m/psim）。
+    - 查找表节点与 VF 网格一致：x_i = -dx/2 + i*dx，共 round(L/dx)+2 个点；
+      ic 内按最近的表节点取值。
     - u, v, w 除以 velocity_ratio（= dx/dt）转为 LBM 无量纲速度
     - rho 固定返回 1.0（VF 不可压缩参考态）
     """
-    # 预计算：只做一次
     wrf_data = make_wrf_column_data(received_step0, static_ctx)
-    z_w    = compute_z_w(wrf_data.ph_total)       # (nz+1, ny, nx) MSL
-    z_mass = compute_z_mass(z_w)                   # (nz,   ny, nx) MSL
-
-    u_3d     = np.asarray(wrf_data.u,     dtype=np.float64)
-    v_3d     = np.asarray(wrf_data.v,     dtype=np.float64)
-    w_3d     = np.asarray(wrf_data.w,     dtype=np.float64)
-    terrain  = np.asarray(wrf_data.terrain_height, dtype=np.float64)
-    ny, nx   = terrain.shape
-    dx_wrf   = wrf_data.dx_wrf
-    dy_wrf   = wrf_data.dy_wrf
+    most_fields = extract_most_fields(received_step0)
     velocity_ratio = ref.dx_lbm / ref.dt_lbm  # m/s → LBM 格子单位的分母
 
+    if None in (domain_length_x, domain_length_y, domain_length_z):
+        # 单点回退路径：与边界条件同一插值函数，逐点调用
+        def ic(x: float, y: float, z: float):
+            f = interp_wrf_to_lbm_nodes_bilinear(
+                wrf_data,
+                target_x=np.array([x + lbm_origin_x]),
+                target_y=np.array([y + lbm_origin_y]),
+                target_z_agl=np.array([z]),
+                most_fields=most_fields,
+            )
+            return (1.0, float(f.u[0]) / velocity_ratio,
+                    float(f.v[0]) / velocity_ratio, float(f.w[0]) / velocity_ratio)
+
+        return ic
+
+    # 查找表路径：LBM 网格是张量积网格，先算整张表，ic 只做取值
+    dx = ref.dx_lbm
+    axes = []
+    for length in (domain_length_x, domain_length_y, domain_length_z):
+        n = int(round(length / dx)) + 2
+        axes.append(-0.5 * dx + dx * np.arange(n))
+    x_l, y_l, z_l = axes
+    x_wrf = np.clip(x_l + lbm_origin_x, 0.0, (wrf_data.terrain_height.shape[1] - 1) * wrf_data.dx_wrf)
+    y_wrf = np.clip(y_l + lbm_origin_y, 0.0, (wrf_data.terrain_height.shape[0] - 1) * wrf_data.dy_wrf)
+    u_tab, v_tab, w_tab = build_lbm_grid_table(
+        wrf_data, x_wrf, y_wrf, np.maximum(z_l, 0.0), most_fields=most_fields,
+    )
+    inv = 1.0 / velocity_ratio
+    u_tab *= inv
+    v_tab *= inv
+    w_tab *= inv
+    nx_l, ny_l, nz_l = x_l.size, y_l.size, z_l.size
+    x0, y0, z0 = x_l[0], y_l[0], z_l[0]
+    inv_dx = 1.0 / dx
+    print(f"[lbm_init] IC table built: {ny_l}x{nx_l}x{nz_l}, "
+          f"max|u|={float(np.abs(u_tab).max()) * velocity_ratio:.2f} m/s", flush=True)
+
     def ic(x: float, y: float, z: float):
-        """LBM 初始条件：(x, y, z_agl) → (rho, vx, vy, vz)。"""
-        # LBM 坐标 → WRF 坐标
-        x_wrf = x + lbm_origin_x
-        y_wrf = y + lbm_origin_y
-
-        # 水平最近邻格点
-        j = int(np.clip(round(y_wrf / dy_wrf), 0, ny - 1))
-        i = int(np.clip(round(x_wrf / dx_wrf), 0, nx - 1))
-
-        # AGL → MSL
-        z_msl = z + terrain[j, i]
-
-        # 垂直列插值（质量层：u, v; w 层：w）
-        u_val, _, _ = _interp_column_1d(u_3d[:, j, i], z_mass[:, j, i], z_msl)
-        v_val, _, _ = _interp_column_1d(v_3d[:, j, i], z_mass[:, j, i], z_msl)
-        w_val, _, _ = _interp_column_1d(w_3d[:, j, i], z_w[:, j, i],    z_msl)
-
-        # 物理速度 → LBM 格子单位
-        vx = u_val / velocity_ratio
-        vy = v_val / velocity_ratio
-        vz = w_val / velocity_ratio
-
-        return (1.0, vx, vy, vz)
+        """LBM 初始条件：(x, y, z_agl) → (rho, vx, vy, vz)，查表。"""
+        ix = min(max(int(round((x - x0) * inv_dx)), 0), nx_l - 1)
+        iy = min(max(int(round((y - y0) * inv_dx)), 0), ny_l - 1)
+        iz = min(max(int(round((z - z0) * inv_dx)), 0), nz_l - 1)
+        return (1.0, float(u_tab[iy, ix, iz]), float(v_tab[iy, ix, iz]), float(w_tab[iy, ix, iz]))
 
     return ic

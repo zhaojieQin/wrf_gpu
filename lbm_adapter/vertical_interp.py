@@ -531,3 +531,234 @@ def _apply_most_to_uv(
         )
 
     return u_out, v_out
+
+
+# ---------------------------------------------------------------------------
+# Bilinear horizontal interpolation (per-column vertical interpolation in AGL)
+# ---------------------------------------------------------------------------
+#
+# WRF d03 is coarse (3 km) relative to the LBM domain (a few km), so
+# nearest-neighbour lookup makes the LBM boundary piecewise constant with
+# jumps of several m/s along WRF column edges.  The functions below:
+#   1. interpolate each WRF column vertically in height above ground (AGL),
+#      so the LBM's flat ground (z=0) maps to every column's own terrain;
+#   2. apply MOST below each column's lowest mass level (per column);
+#   3. blend the four surrounding columns with bilinear weights.
+# Only a handful of WRF columns touch the LBM domain, so the work is
+# vectorised per column (np.interp over all nodes using that column).
+
+
+def destagger_uv(u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Move WRF Arakawa-C u (…, ny, nx+1) and v (…, ny+1, nx) to mass points.
+
+    Arrays already on the mass grid (same trailing shape for u and v) are
+    returned unchanged.
+    """
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    if u.shape == v.shape:
+        return u, v
+    if u.shape[-1] == v.shape[-1] + 1 and v.shape[-2] == u.shape[-2] + 1:
+        u_m = 0.5 * (u[..., :-1] + u[..., 1:])
+        v_m = 0.5 * (v[..., :-1, :] + v[..., 1:, :])
+        return u_m, v_m
+    raise ValueError(f"Unexpected u/v shapes for destaggering: u{u.shape}, v{v.shape}")
+
+
+def _bilinear_corners(target_x, target_y, ny, nx, dx_wrf, dy_wrf):
+    """Return [(j, i, weight)] for the 4 mass-grid columns around each node.
+
+    Mass point (j, i) sits at (i*dx, j*dy) measured from the SW mass point.
+    """
+    target_x = np.asarray(target_x, dtype=np.float64)
+    target_y = np.asarray(target_y, dtype=np.float64)
+    x_max = (nx - 1) * dx_wrf
+    y_max = (ny - 1) * dy_wrf
+    out_of_bounds = (target_x < 0) | (target_x > x_max) | (target_y < 0) | (target_y > y_max)
+    if out_of_bounds.any():
+        bad = np.where(out_of_bounds)[0]
+        raise ValueError(
+            f"{len(bad)} LBM nodes are outside the WRF d03 horizontal grid "
+            f"(x∈[0, {x_max:.1f}] m, y∈[0, {y_max:.1f}] m). "
+            f"First bad node: x={target_x[bad[0]]:.1f}, y={target_y[bad[0]]:.1f}"
+        )
+    fx = target_x / dx_wrf
+    fy = target_y / dy_wrf
+    i0 = np.clip(np.floor(fx).astype(int), 0, max(nx - 2, 0))
+    j0 = np.clip(np.floor(fy).astype(int), 0, max(ny - 2, 0))
+    tx = np.clip(fx - i0, 0.0, 1.0)
+    ty = np.clip(fy - j0, 0.0, 1.0)
+    i1 = np.minimum(i0 + 1, nx - 1)
+    j1 = np.minimum(j0 + 1, ny - 1)
+    return [
+        (j0, i0, (1.0 - ty) * (1.0 - tx)),
+        (j0, i1, (1.0 - ty) * tx),
+        (j1, i0, ty * (1.0 - tx)),
+        (j1, i1, ty * tx),
+    ]
+
+
+class _ColumnSource:
+    """Pre-processed WRF fields for per-column AGL interpolation."""
+
+    def __init__(self, wrf_data: WRFColumnData, most_fields: MOSTSurfaceFields | None,
+                 kappa: float = _KAPPA):
+        self.terrain = np.asarray(wrf_data.terrain_height, dtype=np.float64)
+        self.ny, self.nx = self.terrain.shape
+        z_w = compute_z_w(wrf_data.ph_total)
+        z_mass = compute_z_mass(z_w)
+        self.z_w_agl = z_w - self.terrain[None]
+        self.z_mass_agl = z_mass - self.terrain[None]
+        self.u, self.v = destagger_uv(wrf_data.u, wrf_data.v)
+        self.w = np.asarray(wrf_data.w, dtype=np.float64)
+        self.theta = np.asarray(wrf_data.theta, dtype=np.float64)
+        for name, arr in (("u", self.u), ("v", self.v), ("theta", self.theta)):
+            if arr.shape[1:] != (self.ny, self.nx):
+                raise ValueError(f"{name} shape {arr.shape} does not match terrain {self.terrain.shape}")
+        if self.w.shape[1:] != (self.ny, self.nx):
+            raise ValueError(f"w shape {self.w.shape} does not match terrain {self.terrain.shape}")
+        self.most = most_fields
+        self.kappa = kappa
+
+    def column(self, j: int, i: int, z_agl: np.ndarray):
+        """u, v, w, theta of column (j, i) at heights z_agl (m AGL), vectorised.
+
+        Out-of-range heights are clamped to the end values (np.interp); below
+        the lowest mass level u/v use MOST when surface fields are available.
+        """
+        zm = self.z_mass_agl[:, j, i]
+        zw = self.z_w_agl[:, j, i]
+        u = np.interp(z_agl, zm, self.u[:, j, i])
+        v = np.interp(z_agl, zm, self.v[:, j, i])
+        w = np.interp(z_agl, zw, self.w[:, j, i])
+        theta = np.interp(z_agl, zm, self.theta[:, j, i])
+
+        if self.most is not None:
+            below = z_agl < zm[0]
+            if below.any():
+                u1, v1 = self.u[0, j, i], self.v[0, j, i]
+                spd = float(np.hypot(u1, v1))
+                if spd < 0.1:
+                    u[below] = 0.0  # static-wind protection (as _most_extrapolate_uv)
+                    v[below] = 0.0
+                else:
+                    z0 = float(self.most.roughness_m[j, i])
+                    ustar = float(self.most.ustar[j, i])
+                    psim = float(self.most.psim[j, i])
+                    if not np.isfinite(psim):
+                        psim = 0.0
+                    zb = z_agl[below]
+                    if ustar <= 0.0 or z0 <= 0.0:
+                        mag = np.zeros_like(zb)
+                    else:
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            mag = (ustar / self.kappa) * (np.log(zb / z0) - psim)
+                        mag = np.where(zb > z0, np.maximum(mag, 0.0), 0.0)
+                    u[below] = u1 * mag / spd
+                    v[below] = v1 * mag / spd
+        return u, v, w, theta
+
+
+def interp_wrf_to_lbm_nodes_bilinear(
+    wrf_data: WRFColumnData,
+    target_x: np.ndarray,
+    target_y: np.ndarray,
+    target_z_agl: np.ndarray,
+    most_fields: MOSTSurfaceFields | None = None,
+) -> InterpolatedFields:
+    """Interpolate u, v, w, theta to LBM nodes: bilinear in x/y, linear in z (AGL).
+
+    Parameters
+    ----------
+    wrf_data     : WRFColumnData  (u/v may be staggered; they are destaggered here)
+    target_x/y   : (N,) m  node positions in WRF grid coords (m from SW mass point)
+    target_z_agl : (N,) m  node heights above ground
+    most_fields  : optional MOST surface fields for nodes below the first mass level
+
+    Returns
+    -------
+    InterpolatedFields  u, v, w (m/s) and theta (K, full) at each node
+    """
+    src = _ColumnSource(wrf_data, most_fields)
+    target_z_agl = np.asarray(target_z_agl, dtype=np.float64)
+    n = target_z_agl.shape[0]
+    out = [np.zeros(n) for _ in range(4)]
+
+    for jc, ic, wc in _bilinear_corners(target_x, target_y, src.ny, src.nx,
+                                        wrf_data.dx_wrf, wrf_data.dy_wrf):
+        key = jc * src.nx + ic
+        for k in np.unique(key):
+            m = key == k
+            j, i = divmod(int(k), src.nx)
+            vals = src.column(j, i, target_z_agl[m])
+            wm = wc[m]
+            for o, val in zip(out, vals):
+                o[m] += wm * val
+
+    return InterpolatedFields(u=out[0], v=out[1], w=out[2], theta=out[3])
+
+
+def bilinear_terrain(terrain_height: np.ndarray, target_x, target_y,
+                     dx_wrf: float, dy_wrf: float) -> np.ndarray:
+    """Bilinearly interpolated terrain height (m MSL) at node positions."""
+    terrain = np.asarray(terrain_height, dtype=np.float64)
+    ny, nx = terrain.shape
+    out = np.zeros(np.asarray(target_x).shape[0])
+    for jc, ic, wc in _bilinear_corners(target_x, target_y, ny, nx, dx_wrf, dy_wrf):
+        out += wc * terrain[jc, ic]
+    return out
+
+
+def build_lbm_grid_table(
+    wrf_data: WRFColumnData,
+    x_wrf: np.ndarray,
+    y_wrf: np.ndarray,
+    z_agl: np.ndarray,
+    most_fields: MOSTSurfaceFields | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """u, v, w on a tensor-product LBM grid, shape (ny_l, nx_l, nz_l), float32.
+
+    Same interpolation as :func:`interp_wrf_to_lbm_nodes_bilinear`, exploiting
+    that the LBM grid is separable: column profiles are evaluated once on the
+    1-D z_agl levels and blended with 2-D bilinear weights.
+
+    Parameters
+    ----------
+    x_wrf : (nx_l,) m  LBM grid x positions in WRF coords
+    y_wrf : (ny_l,) m  LBM grid y positions in WRF coords
+    z_agl : (nz_l,) m  LBM grid heights above ground
+    """
+    src = _ColumnSource(wrf_data, most_fields)
+    x_wrf = np.asarray(x_wrf, dtype=np.float64)
+    y_wrf = np.asarray(y_wrf, dtype=np.float64)
+    z_agl = np.asarray(z_agl, dtype=np.float64)
+
+    # Separable corners: run the 2-D corner helper on the x and y axes separately
+    cx = _bilinear_corners(x_wrf, np.zeros_like(x_wrf), src.ny, src.nx, wrf_data.dx_wrf, wrf_data.dy_wrf)
+    cy = _bilinear_corners(np.zeros_like(y_wrf), y_wrf, src.ny, src.nx, wrf_data.dx_wrf, wrf_data.dy_wrf)
+    i_lo, i_hi = cx[0][1], cx[1][1]
+    wx_lo, wx_hi = cx[0][2] + cx[2][2], cx[1][2] + cx[3][2]   # y-weights are 1/0 at y=0
+    j_lo, j_hi = cy[0][0], cy[2][0]
+    wy_lo, wy_hi = cy[0][2] + cy[1][2], cy[2][2] + cy[3][2]
+
+    profiles = {}
+
+    def prof(j, i):
+        if (j, i) not in profiles:
+            u, v, w, _ = src.column(j, i, z_agl.copy())
+            profiles[(j, i)] = np.stack([u, v, w]).astype(np.float32)  # (3, nz_l)
+        return profiles[(j, i)]
+
+    shape = (y_wrf.size, x_wrf.size, z_agl.size)
+    tables = [np.zeros(shape, dtype=np.float32) for _ in range(3)]
+    for jj, wy in ((j_lo, wy_lo), (j_hi, wy_hi)):
+        for ii, wx in ((i_lo, wx_lo), (i_hi, wx_hi)):
+            weight = (wy[:, None] * wx[None, :]).astype(np.float32)        # (ny_l, nx_l)
+            key = jj[:, None] * src.nx + ii[None, :]                        # (ny_l, nx_l)
+            for k in np.unique(key):
+                m = key == k
+                j, i = divmod(int(k), src.nx)
+                p = prof(j, i)
+                for c in range(3):
+                    tables[c][m] += weight[m][:, None] * p[c][None, :]
+    return tables[0], tables[1], tables[2]

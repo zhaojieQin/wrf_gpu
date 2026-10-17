@@ -59,6 +59,9 @@ from lbm_adapter.vertical_interp import (
     InterpolatedFields,
     MOSTSurfaceFields,
     interp_wrf_to_lbm_nodes,
+    interp_wrf_to_lbm_nodes_bilinear,
+    bilinear_terrain,
+    destagger_uv,
 )
 from lbm_adapter.unit_convert import LBMReference, uvw_to_lbm, theta_to_lbm
 
@@ -129,10 +132,13 @@ def make_wrf_column_data(received: dict, static_ctx: WRFStaticContext) -> WRFCol
     theta 字段是 full moist potential temperature θ_m（~300-470 K）。
     不在此处减 300；减 300 在任务 6 的 apply_unit_conversions 里做。
     """
+    # WRF 发送的 u (nz, ny, nx+1) / v (nz, ny+1, nx) 在 Arakawa-C 交错点上，
+    # 先平均到质量点；已是质量点形状时原样返回。
+    u_mass, v_mass = destagger_uv(received["u"], received["v"])
     return WRFColumnData(
         ph_total=np.asarray(received["ph"], dtype=np.float64),
-        u=np.asarray(received["u"], dtype=np.float64),
-        v=np.asarray(received["v"], dtype=np.float64),
+        u=u_mass,
+        v=v_mass,
         w=np.asarray(received["w"], dtype=np.float64),
         theta=np.asarray(received["theta"], dtype=np.float64),
         terrain_height=static_ctx.terrain_height,
@@ -198,9 +204,10 @@ def interp_to_bc_nodes(
     most_fields : MOSTSurfaceFields | None。
                   若提供，对低于 z_mass[0] 的节点用 MOST 代替线性外推。
     z_coord_is_agl : bool，默认 True。
-                 True  — bc_coords[:,2] 是 AGL（VirtualFluids 默认，从地面 0 开始）。
-                         函数内部按 WRF 最近邻格点查 terrain_height，转为 MSL 后插值。
-                 False — bc_coords[:,2] 已经是 MSL（海拔），直接使用。
+                 True  — bc_coords[:,2] 是 AGL（VirtualFluids 默认，从地面 0 开始），
+                         直接与每个 WRF 格柱的离地高度比较插值。
+                 False — bc_coords[:,2] 是 MSL（海拔），先减去双线性插值的地形高度。
+    水平方向对周围 4 个 WRF 格柱做双线性加权（不是最近邻）。
 
     Returns
     -------
@@ -223,27 +230,21 @@ def interp_to_bc_nodes(
     target_y = bc_coords[:, 1]
     target_z_in = bc_coords[:, 2]
 
+    # 水平双线性 + 每个 WRF 格柱按离地高度（AGL）垂直插值：
+    # LBM 平地 z=0 对应每个格柱各自的地形，不再做最近邻 AGL→MSL 换算。
     if z_coord_is_agl:
-        # AGL → MSL：按节点的水平位置查最近邻 WRF 格点的地形高度并相加。
-        # 与 interp_field_to_heights 内部的水平查找方式保持一致（nearest-neighbour）。
-        terrain = np.asarray(wrf_data.terrain_height, dtype=np.float64)
-        ny, nx = terrain.shape
-        j_idx = np.clip(
-            np.round(target_y / wrf_data.dy_wrf).astype(int), 0, ny - 1
-        )
-        i_idx = np.clip(
-            np.round(target_x / wrf_data.dx_wrf).astype(int), 0, nx - 1
-        )
-        terrain_at_node = terrain[j_idx, i_idx]  # (n_bc,) 每节点对应的地形高度
-        target_z = target_z_in + terrain_at_node
+        target_z_agl = target_z_in
     else:
-        target_z = target_z_in
+        target_z_agl = target_z_in - bilinear_terrain(
+            wrf_data.terrain_height, target_x, target_y,
+            wrf_data.dx_wrf, wrf_data.dy_wrf,
+        )
 
-    return interp_wrf_to_lbm_nodes(
+    return interp_wrf_to_lbm_nodes_bilinear(
         wrf_data,
-        target_z=target_z,
         target_x=target_x,
         target_y=target_y,
+        target_z_agl=target_z_agl,
         most_fields=most_fields,
     )
 

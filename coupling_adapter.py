@@ -187,6 +187,9 @@ try:
             received_step0, static_ctx, ref,
             lbm_origin_x=lbm_origin_x,
             lbm_origin_y=lbm_origin_y,
+            domain_length_x=lbm_cfg.domain_length_x,
+            domain_length_y=lbm_cfg.domain_length_y,
+            domain_length_z=lbm_cfg.domain_length_z,
         )
 
         # ── VirtualFluids 仿真构造（含 WRF IC）───────────────────────────
