@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from lbm_adapter.lbm_init import WRFDoubleBuffer
+from lbm_adapter.lbm_init import WRFDoubleBuffer, update_bc
 from lbm_adapter.recv_loop import WRFRecvLoop
 
 
@@ -72,6 +72,7 @@ def run_lbm_coupled(
     start_step: int = 1,
     para=None,
     output_until_step: int | None = None,
+    bc_mode: str = "freestream",
 ) -> CouplingStats:
     """双缓冲耦合主循环。
 
@@ -122,8 +123,8 @@ def run_lbm_coupled(
         if hfx is not None and hasattr(sim, "update_surface_layer_heat_flux"):
             sim.update_surface_layer_heat_flux(hfx, level=level)
 
-        # 4. 更新速度 BC（freestream: per-node inflow/outflow decided in GPU kernel）
-        sim.update_freestream_bc(u, v, w, level=level)
+        # 4. 更新开放边界速度（velocity: 固定速度；freestream: GPU kernel 逐节点判断入流/出流）
+        update_bc(sim, u, v, w, bc_mode, level=level)
 
         # 4. 推进一步
         sim.calculate_timestep(lbm_step)

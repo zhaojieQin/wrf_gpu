@@ -222,7 +222,7 @@ class WRFLBMConfig:
 # ---------------------------------------------------------------------------
 
 def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
-                        initial_condition_fn=None):
+                        initial_condition_fn=None, bc_mode: str = "freestream"):
     """构造并返回 VirtualFluids Simulation 对象。
 
     Parameters
@@ -300,7 +300,14 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
         gpu.SideType.MZ, 0, 0, 1, sampling_offset, cfg.z0, cfg.kappa, cfg.dx
     )
 
-    bc_factory.set_freestream_boundary_condition(gpu.FreestreamBC.FreestreamInterpolatedCompressible)
+    # The five open faces are registered as velocity BC nodes above; the factory decides
+    # which kernel owns them (BoundaryConditionKernelManager zeroes the other one).
+    if bc_mode == "velocity":
+        bc_factory.set_velocity_boundary_condition(gpu.VelocityBC.VelocityInterpolatedCompressible)
+    elif bc_mode == "freestream":
+        bc_factory.set_freestream_boundary_condition(gpu.FreestreamBC.FreestreamInterpolatedCompressible)
+    else:
+        raise ValueError(f"Unknown bc_mode {bc_mode!r} (expected 'velocity' or 'freestream')")
     bc_factory.set_stress_boundary_condition(gpu.StressBC.StressBounceBackCompressible)
     para.set_outflow_pressure_correction_factor(0.0)
 

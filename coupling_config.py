@@ -17,5 +17,13 @@ INTERVAL_SECONDS = D03_DT_SECONDS
 
 # LBM VTK output: write only the first few outputs, then switch output off.
 # Each output is ~1-2 GB (≈21.9M nodes). 15 LBM steps ≈ one WRF frame (2 s).
-LBM_OUTPUT_EVERY_STEPS = 15
+# Current setting: every LBM step for steps 1..5 (VF also writes the t=0 state).
+LBM_OUTPUT_EVERY_STEPS = 1
 LBM_OUTPUT_COUNT = 5
+
+# LBM lateral + roof boundary type:
+#   "velocity"   — fixed (Dirichlet) WRF velocity on all five open faces
+#                  (VF VelocityInterpolatedCompressible); interior evolves freely.
+#                  No net-flux correction yet: watch for mean-density drift.
+#   "freestream" — per-node inflow/outflow switching (FreestreamInterpolatedCompressible)
+LBM_BC_MODE = "velocity"

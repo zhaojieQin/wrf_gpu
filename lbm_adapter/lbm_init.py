@@ -56,7 +56,7 @@ from lbm_adapter.vertical_interp import (
 class WRFFrame(NamedTuple):
     """单个 WRF 时间帧（在 BC 节点处插值完毕）。
 
-    速度保持物理单位：sim.update_freestream_bc 接收 m/s，
+    速度保持物理单位：sim.update_velocity_bc / update_freestream_bc 均接收 m/s，
     并在 C++ 内部（Simulation::updateFreestreamBC）自行除以 velocityRatio。
 
     Attributes
@@ -179,7 +179,7 @@ def _make_wrf_frame(
     )
 
     # 4. 单位转换：只转换 theta（θ_full → K 偏差）。
-    #    u/v/w 保持 m/s：sim.update_freestream_bc 在 C++ 内部除以 velocityRatio，
+    #    u/v/w 保持 m/s：update_velocity_bc / update_freestream_bc 在 C++ 内部除以 velocityRatio，
     #    这里若再转为格子单位会重复换算（速度被缩小 dx/dt 倍）。
     converted = apply_unit_conversions({"theta": interped.theta}, ref)
 
@@ -230,6 +230,35 @@ def _log_bc_velocity_diagnostics(frame: WRFFrame, ref: LBMReference) -> None:
 
 
 # ---------------------------------------------------------------------------
+# BC 模式封装：velocity（固定速度）/ freestream（入流/出流切换）
+# 两种模式的节点集合与顺序相同（均来自 builder->getVelocitySize），只是 VF 接口不同。
+# ---------------------------------------------------------------------------
+
+_BC_MODES = ("velocity", "freestream")
+
+
+def get_bc_coordinates(sim, bc_mode: str = "freestream", level: int = 0) -> np.ndarray:
+    """开放边界节点坐标 (n_bc, 3) [x, y, z]（LBM 坐标，m）。"""
+    if bc_mode == "velocity":
+        coords = sim.get_velocity_bc_coordinates(level=level)
+    elif bc_mode == "freestream":
+        coords = sim.get_freestream_bc_coordinates(level=level)
+    else:
+        raise ValueError(f"Unknown bc_mode {bc_mode!r} (expected one of {_BC_MODES})")
+    return np.asarray(coords, dtype=np.float64)
+
+
+def update_bc(sim, u, v, w, bc_mode: str = "freestream", level: int = 0) -> None:
+    """把 u/v/w（m/s）写入开放边界；VF 在 C++ 内部除以 velocityRatio。"""
+    if bc_mode == "velocity":
+        sim.update_velocity_bc(u, v, w, level=level)
+    elif bc_mode == "freestream":
+        sim.update_freestream_bc(u, v, w, level=level)
+    else:
+        raise ValueError(f"Unknown bc_mode {bc_mode!r} (expected one of {_BC_MODES})")
+
+
+# ---------------------------------------------------------------------------
 # 公开接口：init_lbm_from_wrf
 # ---------------------------------------------------------------------------
 
@@ -242,6 +271,7 @@ def init_lbm_from_wrf(
     level: int = 0,
     bc_coords_override: np.ndarray | None = None,
     sl_coords_override: np.ndarray | None = None,
+    bc_mode: str = "freestream",
 ) -> WRFDoubleBuffer:
     """用 WRF step=0 数据初始化 LBM BC，并建立双缓冲。
 
@@ -274,14 +304,14 @@ def init_lbm_from_wrf(
 
     Side effects
     ------------
-    调用 sim.update_freestream_bc(u, v, w, level=level)（u/v/w 为 m/s），
+    按 bc_mode 调用 sim.update_velocity_bc / update_freestream_bc（u/v/w 为 m/s），
     将 step=0 插值结果设置为首帧 BC。
     """
     # 1. 速度 BC 节点坐标（WRF 参考系，z=AGL）
     if bc_coords_override is not None:
         bc_coords = np.asarray(bc_coords_override, dtype=np.float64)
     else:
-        bc_coords = np.asarray(sim.get_freestream_bc_coordinates(level=level), dtype=np.float64)
+        bc_coords = get_bc_coordinates(sim, bc_mode, level=level)
 
     # 2. surfaceLayerBC 节点坐标 x/y（WRF 参考系）
     if sl_coords_override is not None:
@@ -298,8 +328,8 @@ def init_lbm_from_wrf(
     frame0 = _make_wrf_frame(received_step0, static_ctx, bc_coords, ref, sl_coords=sl_coords)
     frame1 = _make_wrf_frame(received_step1, static_ctx, bc_coords, ref, sl_coords=sl_coords)
 
-    # 4. 用 step=0 设置首帧 freestream BC
-    sim.update_freestream_bc(frame0.u, frame0.v, frame0.w, level=level)
+    # 4. 用 step=0 设置首帧开放边界（velocity 或 freestream）
+    update_bc(sim, frame0.u, frame0.v, frame0.w, bc_mode, level=level)
 
     # 4b. 单位诊断：BC 速度为 m/s，VF 内部换算为格子单位后检查 Mach 数
     _log_bc_velocity_diagnostics(frame0, ref)

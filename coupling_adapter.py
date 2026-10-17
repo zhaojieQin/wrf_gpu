@@ -82,6 +82,7 @@ try:
         print("[Rank 1] Starting LBM coupled simulation...", flush=True)
         from coupling_config import (
             HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
+            LBM_BC_MODE,
         )
 
         # ── lbm_adapter imports ──────────────────────────────────────────
@@ -91,7 +92,9 @@ try:
         from lbm_adapter.wrf_to_lbm import WRFStaticContext
         from lbm_adapter.unit_convert import LBMReference
         from lbm_adapter.recv_loop import recv_next_wrf_step, WRFRecvLoop, READY_TAG
-        from lbm_adapter.lbm_init import init_lbm_from_wrf, make_wrf_initial_condition
+        from lbm_adapter.lbm_init import (
+            init_lbm_from_wrf, make_wrf_initial_condition, get_bc_coordinates,
+        )
         from lbm_adapter.run_coupled import run_lbm_coupled
 
         # ── WRF 耦合参数（与 rank 0 coupling_config 保持一致）────────────
@@ -194,7 +197,9 @@ try:
 
         # ── VirtualFluids 仿真构造（含 WRF IC）───────────────────────────
         print("[Rank 1] Setting up VirtualFluids simulation...", flush=True)
-        sim, para, lbm_cfg = setup_vf_simulation(lbm_cfg, initial_condition_fn=ic)
+        print(f"[Rank 1] LBM open-boundary mode: {LBM_BC_MODE}", flush=True)
+        sim, para, lbm_cfg = setup_vf_simulation(lbm_cfg, initial_condition_fn=ic,
+                                                 bc_mode=LBM_BC_MODE)
         # 只输出最开始的几次 VTK（abl.cfg 的 tOut 远大于模拟时长，否则一次都不输出）
         para.set_timestep_out(LBM_OUTPUT_EVERY_STEPS)
         lbm_output_until_step = LBM_OUTPUT_EVERY_STEPS * LBM_OUTPUT_COUNT
@@ -206,7 +211,7 @@ try:
 
         # ── bc_coords / sl_coords，加 WRF 坐标系 offset ─────────────────
         bc_coords_lbm = np.asarray(
-            sim.get_freestream_bc_coordinates(level=0), dtype=np.float64
+            get_bc_coordinates(sim, LBM_BC_MODE, level=0), dtype=np.float64
         )
         bc_coords_wrf = _add_xy_offset(bc_coords_lbm)
 
@@ -228,6 +233,7 @@ try:
             sim, received_step0, received_step1, static_ctx, ref,
             bc_coords_override=bc_coords_wrf,
             sl_coords_override=sl_coords_wrf,
+            bc_mode=LBM_BC_MODE,
         )
         print(f"[Rank 1] Double buffer ready: t=[{db.t0:.1f}, {db.t1:.1f}]s", flush=True)
 
@@ -256,6 +262,7 @@ try:
             start_step=1,
             para=para,
             output_until_step=lbm_output_until_step,
+            bc_mode=LBM_BC_MODE,
         )
 
         sim.finalize()
