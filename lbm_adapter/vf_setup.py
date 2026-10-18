@@ -385,9 +385,11 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
     if thermal is not None:
         # Buoyancy from the deviation to the horizontal planar average (StratifiedBoundaryLayer)
         para.add_interactor(gpu.BuoyancyProviderPlanarAverage(para, cuda_memory_manager))
+        # SGS constant must be set first: setTurbulenceModel throws if it is still 0
+        # (same order as TurbulenceModelFactory::readConfigFile)
+        tm_factory.set_model_constant(thermal.sgs_constant)
         tm_factory.set_turbulence_model(thermal.turbulence_model)
         tm_factory.set_turbulence_model_advection_diffusion(thermal.turbulence_model_ad)
-        tm_factory.set_model_constant(thermal.sgs_constant)
 
     sim = gpu.Simulation(
         para,
