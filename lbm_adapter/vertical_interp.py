@@ -715,8 +715,12 @@ def build_lbm_grid_table(
     y_wrf: np.ndarray,
     z_agl: np.ndarray,
     most_fields: MOSTSurfaceFields | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """u, v, w on a tensor-product LBM grid, shape (ny_l, nx_l, nz_l), float32.
+    fields: tuple[str, ...] = ("u", "v", "w"),
+) -> tuple[np.ndarray, ...]:
+    """Fields on a tensor-product LBM grid, shape (ny_l, nx_l, nz_l), float32.
+
+    ``fields`` selects any of "u", "v", "w", "theta" (default u, v, w); tables are
+    returned in that order.
 
     Same interpolation as :func:`interp_wrf_to_lbm_nodes_bilinear`, exploiting
     that the LBM grid is separable: column profiles are evaluated once on the
@@ -741,16 +745,18 @@ def build_lbm_grid_table(
     j_lo, j_hi = cy[0][0], cy[2][0]
     wy_lo, wy_hi = cy[0][2] + cy[1][2], cy[2][2] + cy[3][2]
 
+    names = ("u", "v", "w", "theta")
+    sel = [names.index(f) for f in fields]
     profiles = {}
 
     def prof(j, i):
         if (j, i) not in profiles:
-            u, v, w, _ = src.column(j, i, z_agl.copy())
-            profiles[(j, i)] = np.stack([u, v, w]).astype(np.float32)  # (3, nz_l)
+            cols = src.column(j, i, z_agl.copy())
+            profiles[(j, i)] = np.stack([cols[c] for c in sel]).astype(np.float32)  # (n_fields, nz_l)
         return profiles[(j, i)]
 
     shape = (y_wrf.size, x_wrf.size, z_agl.size)
-    tables = [np.zeros(shape, dtype=np.float32) for _ in range(3)]
+    tables = [np.zeros(shape, dtype=np.float32) for _ in sel]
     for jj, wy in ((j_lo, wy_lo), (j_hi, wy_hi)):
         for ii, wx in ((i_lo, wx_lo), (i_hi, wx_hi)):
             weight = (wy[:, None] * wx[None, :]).astype(np.float32)        # (ny_l, nx_l)
@@ -759,6 +765,6 @@ def build_lbm_grid_table(
                 m = key == k
                 j, i = divmod(int(k), src.nx)
                 p = prof(j, i)
-                for c in range(3):
+                for c in range(len(sel)):
                     tables[c][m] += weight[m][:, None] * p[c][None, :]
-    return tables[0], tables[1], tables[2]
+    return tuple(tables)

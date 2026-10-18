@@ -73,6 +73,7 @@ def run_lbm_coupled(
     para=None,
     output_until_step: int | None = None,
     bc_mode: str = "freestream",
+    hfx_scale: float | None = None,
 ) -> CouplingStats:
     """双缓冲耦合主循环。
 
@@ -86,6 +87,8 @@ def run_lbm_coupled(
     dt_lbm     : float  LBM 时间步长（秒）。
     level      : int  多网格层（default 0）。
     start_step : int  起始步编号（default 1，与 VirtualFluids 约定一致，0 用于初始状态）。
+    hfx_scale  : float | None  地表热通量换算系数 dt/(dx·ρ·cp)，把 W/m² 换成 VF 的格子单位
+                 运动学通量；None 时按原值传入（旧行为）。
     para       : gpu.Parameter | None  与 sim 共享的 VF Parameter，仅 output_until_step 需要。
     output_until_step : int | None  此步算完后调用 para.set_timestep_out(0) 关闭 VTK 输出
                  （VF 每步重新读取 timestep_out）。None 表示不干预输出。
@@ -120,8 +123,15 @@ def run_lbm_coupled(
         u, v, w, theta, hfx = db.interp(t_lbm)
 
         # 3. 更新地表热通量 BC（仅换页时 hfx 变化，但每步更新代价可忽略）
+        #    VF 存的是格子单位的运动学热通量：hfx_scale = dt / (dx·ρ·cp)，把 W/m² 换算过去。
         if hfx is not None and hasattr(sim, "update_surface_layer_heat_flux"):
-            sim.update_surface_layer_heat_flux(hfx, level=level)
+            sim.update_surface_layer_heat_flux(
+                hfx * hfx_scale if hfx_scale is not None else hfx, level=level)
+
+        # 3b. 更新温度 Dirichlet 边界（θ − θ_ref，K；温度场开启时）
+        theta_ad = db.interp_theta_ad(t_lbm)
+        if theta_ad is not None:
+            sim.update_ad_dirichlet_bc(theta_ad, level=level)
 
         # 4. 更新开放边界速度（velocity: 固定速度；freestream: GPU kernel 逐节点判断入流/出流）
         update_bc(sim, u, v, w, bc_mode, level=level)

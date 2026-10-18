@@ -27,3 +27,14 @@ LBM_OUTPUT_COUNT = 5
 #                  No net-flux correction yet: watch for mean-density drift.
 #   "freestream" — per-node inflow/outflow switching (FreestreamInterpolatedCompressible)
 LBM_BC_MODE = "velocity"
+
+# LBM temperature field (diurnal cycle), set up as VF apps/gpu/StratifiedBoundaryLayer:
+#   - temperature as advection-diffusion scalar θ − θ_ref (F16 kernel), Pr = 0.7
+#   - buoyancy from the deviation to the horizontal planar average
+#   - ground: surface-layer BC driven by WRF sensible heat flux HFX (every step)
+#   - five open faces: temperature Dirichlet from WRF θ (every step)
+#   - SGS: AMDStratified (momentum and temperature), constant 0.2
+# False → neutral setup (ground stress BC, no temperature), as before.
+LBM_THERMAL = True
+LBM_THETA_REF = 300.0          # K, reference potential temperature (θ − θ_ref is stored)
+LBM_RHO_CP = 1.225 * 1004.5    # J m^-3 K^-1, converts HFX [W/m^2] to kinematic flux [K m/s]

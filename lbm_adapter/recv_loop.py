@@ -138,6 +138,7 @@ class WRFRecvLoop:
     next_step  : int  下一个待接收的 WRF step（初始化消耗了 0 和 1，所以从 2 开始）
     source     : int  WRF rank（默认 0）
     barrier_after_meta : bool  透传给 recv_next_wrf_step（默认 True）
+    ad_coords  : (n_ad, 3)  温度 Dirichlet 边界节点坐标（WRF 参考系 x/y，z 为 AGL），或 None。
     eof_received : bool  是否已收到 EOF（内部状态，不要手动设置）
     """
     comm: object
@@ -148,6 +149,7 @@ class WRFRecvLoop:
     source: int = 0
     sl_coords: np.ndarray | None = None
     barrier_after_meta: bool = True
+    ad_coords: np.ndarray | None = None
     eof_received: bool = field(default=False, init=False)
 
     def maybe_advance(self, t_lbm_s: float, db: WRFDoubleBuffer) -> bool:
@@ -183,7 +185,7 @@ class WRFRecvLoop:
             ) from exc
 
         new_frame = _make_wrf_frame(raw, self.static_ctx, self.bc_coords, self.ref,
-                                    sl_coords=self.sl_coords)
+                                    sl_coords=self.sl_coords, ad_coords=self.ad_coords)
 
         if new_frame.t_wrf <= db.t1:
             warnings.warn(

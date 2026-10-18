@@ -82,18 +82,19 @@ try:
         print("[Rank 1] Starting LBM coupled simulation...", flush=True)
         from coupling_config import (
             HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
-            LBM_BC_MODE,
+            LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP,
         )
 
         # ── lbm_adapter imports ──────────────────────────────────────────
         import numpy as np
         import netCDF4 as nc
-        from lbm_adapter.vf_setup import WRFLBMConfig, setup_vf_simulation
+        from lbm_adapter.vf_setup import WRFLBMConfig, ThermalConfig, setup_vf_simulation
         from lbm_adapter.wrf_to_lbm import WRFStaticContext
         from lbm_adapter.unit_convert import LBMReference
         from lbm_adapter.recv_loop import recv_next_wrf_step, WRFRecvLoop, READY_TAG
         from lbm_adapter.lbm_init import (
             init_lbm_from_wrf, make_wrf_initial_condition, get_bc_coordinates,
+            make_wrf_initial_temperature,
         )
         from lbm_adapter.run_coupled import run_lbm_coupled
 
@@ -143,7 +144,7 @@ try:
         ref = LBMReference(
             dx_lbm=lbm_cfg.dx,
             dt_lbm=lbm_cfg.dt,
-            theta_ref=300.0,
+            theta_ref=LBM_THETA_REF,
         )
         print(f"[Rank 1] LBM: dx={lbm_cfg.dx}m  dt={lbm_cfg.dt:.6f}s  "
               f"u_ref={ref.u_ref:.2f}m/s  n_steps={lbm_cfg.n_steps}", flush=True)
@@ -195,11 +196,28 @@ try:
             domain_length_z=lbm_cfg.domain_length_z,
         )
 
+        # ── 温度场（日循环）：θ 初始场 + 初始局部参考温度 ─────────────────
+        thermal = None
+        ic_ad = ic_ref = None
+        hfx_scale = None
+        if LBM_THERMAL:
+            thermal = ThermalConfig(theta_ref=LBM_THETA_REF)
+            ic_ad, ic_ref = make_wrf_initial_temperature(
+                received_step0, static_ctx, ref,
+                lbm_origin_x, lbm_origin_y,
+                lbm_cfg.domain_length_x, lbm_cfg.domain_length_y, lbm_cfg.domain_length_z,
+            )
+            # HFX [W/m^2] → kinematic [K m/s] → lattice (× dt/dx), as VF stores it
+            hfx_scale = lbm_cfg.dt / (lbm_cfg.dx * LBM_RHO_CP)
+
         # ── VirtualFluids 仿真构造（含 WRF IC）───────────────────────────
         print("[Rank 1] Setting up VirtualFluids simulation...", flush=True)
-        print(f"[Rank 1] LBM open-boundary mode: {LBM_BC_MODE}", flush=True)
+        print(f"[Rank 1] LBM open-boundary mode: {LBM_BC_MODE}  thermal: {LBM_THERMAL}", flush=True)
         sim, para, lbm_cfg = setup_vf_simulation(lbm_cfg, initial_condition_fn=ic,
-                                                 bc_mode=LBM_BC_MODE)
+                                                 bc_mode=LBM_BC_MODE,
+                                                 thermal=thermal,
+                                                 initial_condition_ad_fn=ic_ad,
+                                                 initial_reference_temperature_fn=ic_ref)
         # 只输出最开始的几次 VTK（abl.cfg 的 tOut 远大于模拟时长，否则一次都不输出）
         para.set_timestep_out(LBM_OUTPUT_EVERY_STEPS)
         lbm_output_until_step = LBM_OUTPUT_EVERY_STEPS * LBM_OUTPUT_COUNT
@@ -224,6 +242,15 @@ try:
         else:
             sl_coords_wrf = None
 
+        # 温度 Dirichlet 边界节点（温度场开启时；节点集合与速度边界分开取）
+        ad_coords_wrf = None
+        if LBM_THERMAL:
+            ad_coords_wrf = _add_xy_offset(
+                np.asarray(sim.get_ad_dirichlet_bc_coordinates(level=0), dtype=np.float64))
+            print(f"[Rank 1] AD Dirichlet nodes: {ad_coords_wrf.shape[0]}  "
+                  f"surface-layer nodes: {0 if sl_coords_wrf is None else sl_coords_wrf.shape[0]}  "
+                  f"hfx_scale={hfx_scale:.3e}", flush=True)
+
         # ── 接收 step=1，建立双缓冲 ───────────────────────────────────
         print("[Rank 1] Receiving WRF step=1...", flush=True)
         received_step1 = recv_next_wrf_step(comm, step=1, source=0)
@@ -234,6 +261,7 @@ try:
             bc_coords_override=bc_coords_wrf,
             sl_coords_override=sl_coords_wrf,
             bc_mode=LBM_BC_MODE,
+            ad_coords_override=ad_coords_wrf,
         )
         print(f"[Rank 1] Double buffer ready: t=[{db.t0:.1f}, {db.t1:.1f}]s", flush=True)
 
@@ -249,6 +277,7 @@ try:
             next_step=2,       # step=0,1 已消耗
             source=0,
             sl_coords=sl_coords_wrf,
+            ad_coords=ad_coords_wrf,
         )
 
         print(f"[Rank 1] Entering main loop: n_steps={lbm_cfg.n_steps}", flush=True)
@@ -263,6 +292,7 @@ try:
             para=para,
             output_until_step=lbm_output_until_step,
             bc_mode=LBM_BC_MODE,
+            hfx_scale=hfx_scale,
         )
 
         sim.finalize()

@@ -217,12 +217,31 @@ class WRFLBMConfig:
         return max(1, int(self.t_out_s / self.dt))
 
 
+@dataclass
+class ThermalConfig:
+    """温度场（AD）+ 浮力 + 地面 surface layer 的参数，取值参照 VF apps/gpu/StratifiedBoundaryLayer。
+
+    温度在 LBM 中存为 concentration = θ − theta_ref（K）。
+    """
+    theta_ref: float = 300.0             # K，参考位温（= LBMReference.theta_ref）
+    prandtl_number: float = 0.7          # 分子 Prandtl 数（扩散系数 = ν / Pr）
+    roughness_length_temperature: float | None = None  # z0h（m）；None → 与动量 z0 相同（参考算例）
+    sampling_offset: int = 3             # wall model 采样高度（格点数，参考算例 SamplingOffset = 3）
+    turbulence_model: str = "AMDStratified"
+    turbulence_model_ad: str = "AMDStratified"
+    sgs_constant: float = 0.2
+    gravity: float = 9.81
+
+
 # ---------------------------------------------------------------------------
 # VirtualFluids 仿真构造
 # ---------------------------------------------------------------------------
 
 def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
-                        initial_condition_fn=None, bc_mode: str = "freestream"):
+                        initial_condition_fn=None, bc_mode: str = "freestream",
+                        thermal: ThermalConfig | None = None,
+                        initial_condition_ad_fn=None,
+                        initial_reference_temperature_fn=None):
     """构造并返回 VirtualFluids Simulation 对象。
 
     Parameters
@@ -230,6 +249,11 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
     cfg           : WRFLBMConfig（由 WRFLBMConfig.from_cfg_file() 创建）
     communicator  : pyfluids MPICommunicator（已初始化）。
                     若为 None，调用 MPICommunicator.get_instance()。
+    thermal       : ThermalConfig | None。给定时启用温度场：AD kernel、浮力（planar average）、
+                    地面 surface layer（热通量驱动）、五个开放面温度 Dirichlet、分层 SGS 模型。
+                    None 时保持中性设置（地面 stress BC），行为与之前一致。
+    initial_condition_ad_fn : ic_ad(x, y, z) -> θ − θ_ref（K），thermal 时使用
+    initial_reference_temperature_fn : 同签名，初始局部参考温度（浮力/分层 SGS 用）
 
     Returns
     -------
@@ -294,11 +318,29 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
     grid_builder.set_velocity_boundary_condition(gpu.SideType.PY, 0.0, 0.0, 0.0)
     grid_builder.set_velocity_boundary_condition(gpu.SideType.PZ, 0.0, 0.0, 0.0)
 
-    # Ground: stress BC (unchanged)
-    sampling_offset = 2
-    grid_builder.set_stress_boundary_condition(
-        gpu.SideType.MZ, 0, 0, 1, sampling_offset, cfg.z0, cfg.kappa, cfg.dx
-    )
+    if thermal is None:
+        # Ground: stress BC. Binding order: (..., sampling_offset, von_karman_constant,
+        # roughness_length, delta_x) — kappa before z0 (they were swapped before).
+        sampling_offset = 2
+        grid_builder.set_stress_boundary_condition(
+            gpu.SideType.MZ, 0, 0, 1, sampling_offset, cfg.kappa, cfg.z0, cfg.dx
+        )
+    else:
+        # Ground: surface layer BC (momentum wall model + surface heat flux), as in
+        # StratifiedBoundaryLayer. The flux is replaced every step from WRF HFX via
+        # sim.update_surface_layer_heat_flux; start from zero.
+        z0h = thermal.roughness_length_temperature or cfg.z0
+        grid_builder.set_surface_layer_boundary_condition(
+            gpu.SideType.MZ, 0.0, 0.0, 1.0, thermal.sampling_offset, cfg.kappa, cfg.z0, z0h,
+            0.0,   # surface_heat_flux (kinematic, K m/s) — overwritten each step
+            0.0,   # surface_temperature (deviation, unused in heat-flux mode)
+            0.0,   # heating_rate
+            cfg.dx, cfg.dt,
+        )
+        # Temperature on the five open faces: Dirichlet, overwritten each step from WRF θ
+        for side in (gpu.SideType.MX, gpu.SideType.PX, gpu.SideType.MY,
+                     gpu.SideType.PY, gpu.SideType.PZ):
+            grid_builder.set_AD_dirichlet_boundary_condition(side, 0.0, 0.0, 0.0, 0.0)
 
     # The five open faces are registered as velocity BC nodes above; the factory decides
     # which kernel owns them (BoundaryConditionKernelManager zeroes the other one).
@@ -311,6 +353,27 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
     bc_factory.set_stress_boundary_condition(gpu.StressBC.StressBounceBackCompressible)
     para.set_outflow_pressure_correction_factor(0.0)
 
+    if thermal is not None:
+        bc_factory.set_surface_layer_boundary_condition(
+            gpu.StressBC.StressBounceBackCompressible, gpu.SurfaceLayerBC.SurfaceHeatFlux)
+        # Slip variant uses the local fluid velocity at the node (open boundary, not a wall)
+        bc_factory.set_advection_diffusion_dirichlet_boundary_condition(
+            gpu.AdvectionDiffusionDirichletBC.DirichletAntiBounceBackSlip)
+
+        diffusivity_lb = (cfg.viscosity / thermal.prandtl_number) * cfg.dt / (cfg.dx * cfg.dx)
+        gravity_lb = thermal.gravity * cfg.dt * cfg.dt / cfg.dx
+        para.set_diff_on(True)
+        para.set_AD_kernel(gpu.kernel.advection_diffusion.compressible.F16)
+        para.set_diffusivity_LB(diffusivity_lb)
+        para.set_reference_temperature(thermal.theta_ref)
+        para.set_buoyancy_factor(gravity_lb / thermal.theta_ref)
+        para.set_is_body_force(True)
+        para.set_buoyancy_enabled(True)
+        if initial_condition_ad_fn is not None:
+            para.set_initial_condition_AD(initial_condition_ad_fn)
+        if initial_reference_temperature_fn is not None:
+            para.set_initial_local_reference_temperature(initial_reference_temperature_fn)
+
     para.set_initial_condition(
         initial_condition_fn if initial_condition_fn is not None
         else gpu.initialization_functions.log_law(cfg.u_star, cfg.kappa, cfg.z0, cfg.velocity_ratio)
@@ -318,6 +381,13 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
 
     cuda_memory_manager = gpu.CudaMemoryManager(para)
     tm_factory = gpu.TurbulenceModelFactory(para)
+
+    if thermal is not None:
+        # Buoyancy from the deviation to the horizontal planar average (StratifiedBoundaryLayer)
+        para.add_interactor(gpu.BuoyancyProviderPlanarAverage(para, cuda_memory_manager))
+        tm_factory.set_turbulence_model(thermal.turbulence_model)
+        tm_factory.set_turbulence_model_advection_diffusion(thermal.turbulence_model_ad)
+        tm_factory.set_model_constant(thermal.sgs_constant)
 
     sim = gpu.Simulation(
         para,

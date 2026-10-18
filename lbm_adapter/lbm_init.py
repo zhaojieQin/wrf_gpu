@@ -65,6 +65,8 @@ class WRFFrame(NamedTuple):
     u, v, w   : (n_bc,)  物理速度（m s⁻¹）
     theta     : (n_bc,)  LBM 浓度（K 偏差，= θ_full − theta_ref）
     hfx       : (n_sl,) or None  地表感热通量（W m⁻²），已插值到 surfaceLayerBC 节点
+    theta_ad  : (n_ad,) or None  θ − theta_ref（K），已插值到温度 Dirichlet 边界节点
+                （温度场开启时；节点集合与速度边界可能不同，单独插值）
     """
     t_wrf: float
     u: np.ndarray              # (n_bc,) m/s
@@ -72,6 +74,7 @@ class WRFFrame(NamedTuple):
     w: np.ndarray              # (n_bc,) m/s
     theta: np.ndarray          # (n_bc,) K deviation
     hfx: np.ndarray | None     # (n_sl,) W m⁻², or None if not sent
+    theta_ad: np.ndarray | None = None  # (n_ad,) K deviation, or None
 
 
 @dataclass
@@ -132,6 +135,15 @@ class WRFDoubleBuffer:
             hfx = f0.hfx
         return u, v, w, theta, hfx
 
+    def interp_theta_ad(self, t_lbm: float):
+        """温度 Dirichlet 节点上的 θ − θ_ref 时间插值；两帧都没有时返回 None。"""
+        f0, f1 = self.buf[0], self.buf[1]
+        if f0.theta_ad is None or f1.theta_ad is None:
+            return f1.theta_ad if f1.theta_ad is not None else f0.theta_ad
+        dt = self.t1 - self.t0
+        alpha = 1.0 if dt <= 0.0 else float(np.clip((t_lbm - self.t0) / dt, 0.0, 1.0))
+        return (1.0 - alpha) * f0.theta_ad + alpha * f1.theta_ad
+
     def advance(self, new_frame: WRFFrame) -> None:
         """换页：buf[0] ← buf[1]，buf[1] ← new_frame。"""
         self.buf[0] = self.buf[1]
@@ -148,8 +160,12 @@ def _make_wrf_frame(
     bc_coords: np.ndarray,
     ref: LBMReference,
     sl_coords: np.ndarray | None = None,
+    ad_coords: np.ndarray | None = None,
 ) -> WRFFrame:
     """将一个 received dict 转换为 WRFFrame（BC 节点插值 + 单位转换）。
+
+    ad_coords : (n_ad, 3) 温度 Dirichlet 边界节点坐标（WRF 参考系 x/y，z 为 AGL），或 None。
+                给定时在这些节点上另外插值 θ，存入 WRFFrame.theta_ad（θ − theta_ref）。
 
     Parameters
     ----------
@@ -196,6 +212,12 @@ def _make_wrf_frame(
             )
         hfx = None
 
+    # 6. 温度 Dirichlet 节点上的 θ（温度场开启时）
+    theta_ad = None
+    if ad_coords is not None:
+        interped_ad = interp_to_bc_nodes(wrf_data, ad_coords, most_fields=most_fields)
+        theta_ad = np.asarray(interped_ad.theta, dtype=np.float64) - ref.theta_ref
+
     return WRFFrame(
         t_wrf=t_wrf,
         u=np.asarray(interped.u, dtype=np.float64),
@@ -203,6 +225,7 @@ def _make_wrf_frame(
         w=np.asarray(interped.w, dtype=np.float64),
         theta=converted["theta"],
         hfx=hfx,
+        theta_ad=theta_ad,
     )
 
 
@@ -272,6 +295,7 @@ def init_lbm_from_wrf(
     bc_coords_override: np.ndarray | None = None,
     sl_coords_override: np.ndarray | None = None,
     bc_mode: str = "freestream",
+    ad_coords_override: np.ndarray | None = None,
 ) -> WRFDoubleBuffer:
     """用 WRF step=0 数据初始化 LBM BC，并建立双缓冲。
 
@@ -297,6 +321,9 @@ def init_lbm_from_wrf(
     sl_coords_override : (n_sl, 2) float64 或 None。
         若提供，直接用此坐标（x/y 已在 WRF 参考系），
         跳过内部的 sim.get_surface_layer_bc_coordinates 调用。
+    ad_coords_override : (n_ad, 3) float64 或 None。
+        温度 Dirichlet 边界节点坐标（WRF 参考系 x/y，z 为 AGL）。给定时插值 θ 并
+        调用 sim.update_ad_dirichlet_bc 设置首帧温度边界；None 表示无温度场。
 
     Returns
     -------
@@ -325,14 +352,23 @@ def init_lbm_from_wrf(
         sl_coords = None
 
     # 3. 构造两帧
-    frame0 = _make_wrf_frame(received_step0, static_ctx, bc_coords, ref, sl_coords=sl_coords)
-    frame1 = _make_wrf_frame(received_step1, static_ctx, bc_coords, ref, sl_coords=sl_coords)
+    ad_coords = None if ad_coords_override is None else np.asarray(ad_coords_override, dtype=np.float64)
+    frame0 = _make_wrf_frame(received_step0, static_ctx, bc_coords, ref,
+                             sl_coords=sl_coords, ad_coords=ad_coords)
+    frame1 = _make_wrf_frame(received_step1, static_ctx, bc_coords, ref,
+                             sl_coords=sl_coords, ad_coords=ad_coords)
 
     # 4. 用 step=0 设置首帧开放边界（velocity 或 freestream）
     update_bc(sim, frame0.u, frame0.v, frame0.w, bc_mode, level=level)
 
     # 4b. 单位诊断：BC 速度为 m/s，VF 内部换算为格子单位后检查 Mach 数
     _log_bc_velocity_diagnostics(frame0, ref)
+
+    # 4c. 首帧温度 Dirichlet 边界（θ − θ_ref，K）
+    if frame0.theta_ad is not None:
+        sim.update_ad_dirichlet_bc(frame0.theta_ad, level=level)
+        print(f"[lbm_init] AD Dirichlet nodes: {frame0.theta_ad.size}, θ−θ_ref range "
+              f"[{frame0.theta_ad.min():.2f}, {frame0.theta_ad.max():.2f}] K", flush=True)
 
     # 5. 建立双缓冲
     return WRFDoubleBuffer(buf=[frame0, frame1])
@@ -434,3 +470,63 @@ def make_wrf_initial_condition(
         return (0.0, float(u_tab[iy, ix, iz]), float(v_tab[iy, ix, iz]), float(w_tab[iy, ix, iz]))
 
     return ic
+
+
+# ---------------------------------------------------------------------------
+# WRF 三维温度场初始条件（温度场开启时）
+# ---------------------------------------------------------------------------
+
+def make_wrf_initial_temperature(
+    received_step0: dict,
+    static_ctx: WRFStaticContext,
+    ref: LBMReference,
+    lbm_origin_x: float,
+    lbm_origin_y: float,
+    domain_length_x: float,
+    domain_length_y: float,
+    domain_length_z: float,
+):
+    """返回 (ic_ad, ic_ref)，分别传给 para.set_initial_condition_AD /
+    para.set_initial_local_reference_temperature。
+
+    - ic_ad(x, y, z)  -> θ − θ_ref（K），WRF step=0 的 θ，与速度初始场同一套插值
+      （水平双线性、每个格柱按离地高度线性插值），在 LBM 网格上预先建表。
+    - ic_ref(x, y, z) -> 同一张表的水平平均廓线（只随 z 变化），作为初始局部参考温度；
+      BuoyancyProviderPlanarAverage 之后每一步会用当前的水平平均覆盖它。
+    """
+    wrf_data = make_wrf_column_data(received_step0, static_ctx)
+    most_fields = extract_most_fields(received_step0)
+
+    dx = ref.dx_lbm
+    axes = []
+    for length in (domain_length_x, domain_length_y, domain_length_z):
+        n = int(round(length / dx)) + 2
+        axes.append(-0.5 * dx + dx * np.arange(n))
+    x_l, y_l, z_l = axes
+    ny_w, nx_w = wrf_data.terrain_height.shape
+    x_wrf = np.clip(x_l + lbm_origin_x, 0.0, (nx_w - 1) * wrf_data.dx_wrf)
+    y_wrf = np.clip(y_l + lbm_origin_y, 0.0, (ny_w - 1) * wrf_data.dy_wrf)
+    (theta_tab,) = build_lbm_grid_table(
+        wrf_data, x_wrf, y_wrf, np.maximum(z_l, 0.0),
+        most_fields=most_fields, fields=("theta",),
+    )
+    theta_tab -= np.float32(ref.theta_ref)              # θ − θ_ref
+    theta_mean = theta_tab.mean(axis=(0, 1))            # (nz_l,) 水平平均廓线
+
+    nx_l, ny_l, nz_l = x_l.size, y_l.size, z_l.size
+    x0, y0, z0 = x_l[0], y_l[0], z_l[0]
+    inv_dx = 1.0 / dx
+    print(f"[lbm_init] θ IC table built: {ny_l}x{nx_l}x{nz_l}, θ−θ_ref range "
+          f"[{float(theta_tab.min()):.2f}, {float(theta_tab.max()):.2f}] K "
+          f"(θ_ref={ref.theta_ref} K)", flush=True)
+
+    def _idx(v, v0, n):
+        return min(max(int(round((v - v0) * inv_dx)), 0), n - 1)
+
+    def ic_ad(x: float, y: float, z: float) -> float:
+        return float(theta_tab[_idx(y, y0, ny_l), _idx(x, x0, nx_l), _idx(z, z0, nz_l)])
+
+    def ic_ref(x: float, y: float, z: float) -> float:  # noqa: ARG001
+        return float(theta_mean[_idx(z, z0, nz_l)])
+
+    return ic_ad, ic_ref
