@@ -3,7 +3,13 @@
 Single source of truth for coupling parameters.
 """
 
-# Forecast duration (hours)
+# WRF spin-up (hours): WRF runs alone first, no data is sent to the LBM.
+# Coupling starts at t = SPINUP_HOURS (WRF model time); the LBM is initialised
+# from the first WRF frame after spin-up. Total WRF forecast = SPINUP_HOURS + HOURS.
+SPINUP_HOURS = 12
+COUPLING_START_SECONDS = SPINUP_HOURS * 3600
+
+# Coupled duration (hours), counted from the end of the spin-up
 HOURS = 1
 
 # d03 timestep (seconds): time_step=18 / (ratio_d02=3 * ratio_d03=3) = 2s
@@ -41,7 +47,9 @@ LBM_BC_MODE = "velocity"
 #   - SGS: AMDStratified (momentum and temperature), constant 0.2
 # False → neutral setup (ground stress BC, no temperature), as before.
 LBM_THERMAL = True
-LBM_THETA_REF = 300.0          # K, reference potential temperature (θ − θ_ref is stored)
+# K, reference potential temperature (θ − θ_ref is stored).
+# None → automatic: mean WRF θ over the LBM volume in the first coupled frame.
+LBM_THETA_REF = None
 LBM_RHO_CP = 1.225 * 1004.5    # J m^-3 K^-1, converts HFX [W/m^2] to kinematic flux [K m/s]
 # Temperature Dirichlet scheme on the five open faces:
 #   "interpolated"   → DirichletInterpolatedSlip (uses subgrid distance q, analogous to VelocityInterpolatedCompressible)

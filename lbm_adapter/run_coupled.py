@@ -74,6 +74,7 @@ def run_lbm_coupled(
     output_until_step: int | None = None,
     bc_mode: str = "freestream",
     hfx_scale: float | None = None,
+    t_offset: float = 0.0,
 ) -> CouplingStats:
     """双缓冲耦合主循环。
 
@@ -89,6 +90,9 @@ def run_lbm_coupled(
     start_step : int  起始步编号（default 1，与 VirtualFluids 约定一致，0 用于初始状态）。
     hfx_scale  : float | None  地表热通量换算系数 dt/(dx·ρ·cp)，把 W/m² 换成 VF 的格子单位
                  运动学通量；None 时按原值传入（旧行为）。
+    t_offset   : float  LBM 起点对应的 WRF 模式时间（秒）。WRF 先 spin-up 再耦合时，
+                 WRF 帧时间是绝对时间，t_lbm = t_offset + lbm_step·dt_lbm 才能与之对齐。
+                 默认 0（旧行为）。
     para       : gpu.Parameter | None  与 sim 共享的 VF Parameter，仅 output_until_step 需要。
     output_until_step : int | None  此步算完后调用 para.set_timestep_out(0) 关闭 VTK 输出
                  （VF 每步重新读取 timestep_out）。None 表示不干预输出。
@@ -111,7 +115,7 @@ def run_lbm_coupled(
     )
 
     for lbm_step in range(start_step, start_step + n_steps):
-        t_lbm = lbm_step * dt_lbm
+        t_lbm = t_offset + lbm_step * dt_lbm
 
         # 1. 换页（若需要）
         advanced = recv_loop.maybe_advance(t_lbm, db)

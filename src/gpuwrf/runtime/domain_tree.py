@@ -728,12 +728,11 @@ def run_domain_tree_callbacks(
                 maybe_output(name)
                 # Trigger coupling callback if at alarm step
                 if coupling is not None and name in coupling_alarm_sets:
-                    print("[DBG-leaf]", name,
-                          "coupling_none=", coupling is None,
-                          "in_sets=", name in coupling_alarm_sets,
-                          "own_step=", own_steps.get(name), type(own_steps.get(name)),
-                          "alarm_val=", coupling_alarm_sets.get(name),
-                          "alarm_type=", type(coupling_alarm_sets.get(name)), flush=True)
+                    if os.environ.get("GPUWRF_COUPLING_VERBOSE", "0") == "1":
+                        print("[DBG-leaf]", name,
+                              "own_step=", own_steps.get(name),
+                              "is_alarm=", own_steps[name] in coupling_alarm_sets[name],
+                              "n_alarms=", len(coupling_alarm_sets[name]), flush=True)
                     if own_steps[name] in coupling_alarm_sets[name]:
                         coupling(name, own_steps[name], out[name])
                         events.append(("coupling", name, own_steps[name]))

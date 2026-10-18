@@ -39,17 +39,23 @@ try:
     if rank == 0:
         print("[Rank 0] Starting WRF GPU forecast...", flush=True)
         from gpuwrf.integration.nested_pipeline import NestedPipelineConfig, execute_nested_pipeline
-        from coupling_config import HOURS, INTERVAL_SECONDS, D03_DT_SECONDS
+        from coupling_config import (
+            HOURS, INTERVAL_SECONDS, D03_DT_SECONDS, SPINUP_HOURS, COUPLING_START_SECONDS,
+        )
+        print(f"[Rank 0] WRF spin-up {SPINUP_HOURS} h (no coupling), then coupled {HOURS} h "
+              f"(coupling starts at t={COUPLING_START_SECONDS} s)", flush=True)
 
         config = NestedPipelineConfig(
             input_dir=Path('/home/zhaqi746/code/wrf_gpu/examples/SWiFT'),
             output_dir=Path('/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi'),
             proof_dir=Path('/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi/proofs'),
-            hours=HOURS,
+            hours=SPINUP_HOURS + HOURS,
             max_dom=3,
             coupling_config={
                 'enabled': True,
                 'interval_seconds': INTERVAL_SECONDS,
+                # no coupling before this WRF model time (spin-up)
+                'start_seconds': COUPLING_START_SECONDS,
                 'target_domain': 'd03',
                 'dry_run': False,
                 'mpi_dest_rank': 1,
@@ -84,6 +90,7 @@ try:
             HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
             LBM_FULL_VTK_OUTPUT, LBM_PROBE_EVERY_STEPS,
             LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP, LBM_AD_DIRICHLET_BC,
+            SPINUP_HOURS, COUPLING_START_SECONDS,
         )
 
         # ── lbm_adapter imports ──────────────────────────────────────────
@@ -95,7 +102,7 @@ try:
         from lbm_adapter.recv_loop import recv_next_wrf_step, WRFRecvLoop, READY_TAG
         from lbm_adapter.lbm_init import (
             init_lbm_from_wrf, make_wrf_initial_condition, get_bc_coordinates,
-            make_wrf_initial_temperature,
+            make_wrf_initial_temperature, estimate_theta_ref,
         )
         from lbm_adapter.run_coupled import run_lbm_coupled
 
@@ -141,15 +148,6 @@ try:
             z0_mean=z0_mean,
         )
 
-        # LBM 参考量（从 lbm_cfg 导出，与 VF para 保持一致）
-        ref = LBMReference(
-            dx_lbm=lbm_cfg.dx,
-            dt_lbm=lbm_cfg.dt,
-            theta_ref=LBM_THETA_REF,
-        )
-        print(f"[Rank 1] LBM: dx={lbm_cfg.dx}m  dt={lbm_cfg.dt:.6f}s  "
-              f"u_ref={ref.u_ref:.2f}m/s  n_steps={lbm_cfg.n_steps}", flush=True)
-
         # ── LBM 域在 WRF d03 网格中的水平定位（中心对齐）────────────────
         # VF bc_coords x/y 从 (0,0) 开始（LBM 域西南角）
         # 需要加 offset 转为 WRF d03 坐标系（西南角为原点）
@@ -182,10 +180,42 @@ try:
         ready_msg = comm.recv(source=0, tag=READY_TAG)
         print(f"[Rank 1] Ready signal received: {ready_msg}", flush=True)
 
-        # ── 接收 step=0（需在 sim 构造前，用于 WRF 三维场初始条件）────────
-        print("[Rank 1] Receiving WRF step=0...", flush=True)
+        # ── 接收 step=0（WRF spin-up 结束后的第一帧；LBM 初始场与 θ_ref 都由它决定）──
+        print(f"[Rank 1] Receiving WRF step=0 (blocks during the {SPINUP_HOURS} h WRF spin-up, "
+              f"coupling starts at t_wrf={COUPLING_START_SECONDS} s)...", flush=True)
         received_step0 = recv_next_wrf_step(comm, step=0, source=0)
-        print(f"[Rank 1] step=0 received, t_wrf={received_step0.get('__wrf_time_s', 0):.1f}s", flush=True)
+        t_wrf0 = float(received_step0.get('__wrf_time_s', 0.0))
+        print(f"[Rank 1] step=0 received, t_wrf={t_wrf0:.1f}s", flush=True)
+        if t_wrf0 < COUPLING_START_SECONDS:
+            raise RuntimeError(
+                f"First WRF frame t_wrf={t_wrf0:.1f}s is before COUPLING_START_SECONDS="
+                f"{COUPLING_START_SECONDS}s: rank 0 is not honouring the spin-up "
+                "(is nested_pipeline.py with 'start_seconds' support synced?)")
+
+        # LBM 时间 = t_offset + step·dt；与 WRF 绝对时间对齐（WRF 帧时间从 spin-up 结束起算）
+        lbm_t_offset = float(COUPLING_START_SECONDS)
+
+        # ── θ_ref：None → 用 spin-up 后首帧在 LBM 体积内的平均 θ ─────────
+        if LBM_THETA_REF is None:
+            theta_ref = estimate_theta_ref(
+                received_step0, static_ctx, lbm_cfg.dx,
+                lbm_origin_x, lbm_origin_y,
+                lbm_cfg.domain_length_x, lbm_cfg.domain_length_y, lbm_cfg.domain_length_z,
+            )
+            theta_ref_src = f"auto: mean WRF θ over LBM volume at t_wrf={t_wrf0:.0f}s"
+        else:
+            theta_ref = float(LBM_THETA_REF)
+            theta_ref_src = "coupling_config.LBM_THETA_REF"
+
+        # LBM 参考量（从 lbm_cfg 导出，与 VF para 保持一致）
+        ref = LBMReference(
+            dx_lbm=lbm_cfg.dx,
+            dt_lbm=lbm_cfg.dt,
+            theta_ref=theta_ref,
+        )
+        print(f"[Rank 1] LBM: dx={lbm_cfg.dx}m  dt={lbm_cfg.dt:.6f}s  "
+              f"u_ref={ref.u_ref:.2f}m/s  n_steps={lbm_cfg.n_steps}  "
+              f"θ_ref={theta_ref:.3f}K ({theta_ref_src})", flush=True)
 
         # ── 用 WRF step=0 三维场构造 LBM 初始条件函数 ──────────────────
         ic = make_wrf_initial_condition(
@@ -202,7 +232,7 @@ try:
         ic_ad = ic_ref = None
         hfx_scale = None
         if LBM_THERMAL:
-            thermal = ThermalConfig(theta_ref=LBM_THETA_REF, dirichlet_bc=LBM_AD_DIRICHLET_BC)
+            thermal = ThermalConfig(theta_ref=ref.theta_ref, dirichlet_bc=LBM_AD_DIRICHLET_BC)
             ic_ad, ic_ref = make_wrf_initial_temperature(
                 received_step0, static_ctx, ref,
                 lbm_origin_x, lbm_origin_y,
@@ -309,6 +339,7 @@ try:
             output_until_step=lbm_output_until_step,
             bc_mode=LBM_BC_MODE,
             hfx_scale=hfx_scale,
+            t_offset=lbm_t_offset,
         )
 
         sim.finalize()

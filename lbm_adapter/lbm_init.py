@@ -476,6 +476,46 @@ def make_wrf_initial_condition(
 # WRF 三维温度场初始条件（温度场开启时）
 # ---------------------------------------------------------------------------
 
+def estimate_theta_ref(
+    received_step0: dict,
+    static_ctx: WRFStaticContext,
+    dx_lbm: float,
+    lbm_origin_x: float,
+    lbm_origin_y: float,
+    domain_length_x: float,
+    domain_length_y: float,
+    domain_length_z: float,
+    stride_xy: int = 8,
+    stride_z: int = 4,
+) -> float:
+    """LBM 体积内 WRF θ 的平均值（K），用作自动 θ_ref。
+
+    插值方式与 make_wrf_initial_temperature 相同（水平双线性 + 每列按离地高度插值），
+    只是在 LBM 网格上按 stride 抽稀，代价很小。
+    """
+    wrf_data = make_wrf_column_data(received_step0, static_ctx)
+    most_fields = extract_most_fields(received_step0)
+
+    axes = []
+    for length, stride in ((domain_length_x, stride_xy), (domain_length_y, stride_xy),
+                           (domain_length_z, stride_z)):
+        n = int(round(length / dx_lbm)) + 2
+        axes.append((-0.5 * dx_lbm + dx_lbm * np.arange(n))[::stride])
+    x_l, y_l, z_l = axes
+    ny_w, nx_w = wrf_data.terrain_height.shape
+    x_wrf = np.clip(x_l + lbm_origin_x, 0.0, (nx_w - 1) * wrf_data.dx_wrf)
+    y_wrf = np.clip(y_l + lbm_origin_y, 0.0, (ny_w - 1) * wrf_data.dy_wrf)
+    (theta_tab,) = build_lbm_grid_table(
+        wrf_data, x_wrf, y_wrf, np.maximum(z_l, 0.0),
+        most_fields=most_fields, fields=("theta",),
+    )
+    theta_ref = float(np.mean(theta_tab, dtype=np.float64))
+    print(f"[lbm_init] auto θ_ref = {theta_ref:.3f} K  (θ range in LBM volume "
+          f"[{float(theta_tab.min()):.2f}, {float(theta_tab.max()):.2f}] K, "
+          f"{theta_tab.size} sample nodes)", flush=True)
+    return theta_ref
+
+
 def make_wrf_initial_temperature(
     received_step0: dict,
     static_ctx: WRFStaticContext,

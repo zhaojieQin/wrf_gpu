@@ -2444,14 +2444,24 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         coupling_interval_steps = 1
         temp_root_steps = int(round(float(config.hours) * 3600.0 / dt_by_domain[names[0]]))
         temp_target_steps = temp_root_steps * ratio_accumulated
+        # Optional WRF spin-up: no coupling at or before start_seconds (default 0 = couple from step 1)
+        coupling_start_seconds = float(config.coupling_config.get('start_seconds', 0) or 0)
+        coupling_start_step = int(round(coupling_start_seconds / float(target_dt)))
         coupling_alarms = tuple(
             step for step in range(coupling_interval_steps, temp_target_steps + 1, coupling_interval_steps)
-            if step <= temp_target_steps
+            if coupling_start_step < step <= temp_target_steps
         )
+        if not coupling_alarms:
+            raise ValueError(
+                f"WRF-LBM coupling: no coupling steps left after start_seconds={coupling_start_seconds} "
+                f"(forecast hours={config.hours}, target_dt={target_dt})"
+            )
         coupling_alarm_schedule = {target_domain: coupling_alarms}
-        print(f"[DEBUG] coupling_alarm_schedule set: {coupling_alarm_schedule}", flush=True)
         print(f"[耦合初始化] target_domain={target_domain} interval_seconds={interval_seconds} "
-              f"coupling_alarms count={len(coupling_alarms)} coupling_alarm_schedule={coupling_alarm_schedule}",
+              f"start_seconds={coupling_start_seconds:g} (spin-up {coupling_start_step} {target_domain} steps) "
+              f"coupling_alarms count={len(coupling_alarms)} "
+              f"first={coupling_alarms[0]} last={coupling_alarms[-1]} "
+              f"(t={coupling_alarms[0] * float(target_dt):g}s .. {coupling_alarms[-1] * float(target_dt):g}s)",
               flush=True)
 
         # Coupling logging configuration
@@ -2779,11 +2789,12 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                         )
                         if seg_alarms:
                             seg_coupling_alarms[domain_name] = seg_alarms
-                    print(f"[耦合分段] seg_coupling_alarms={seg_coupling_alarms}", flush=True)
+                    print("[耦合分段] seg_coupling_alarms=" + (
+                        ", ".join(f"{d}: n={len(a)} [{a[0]}..{a[-1]}]" for d, a in seg_coupling_alarms.items())
+                        if seg_coupling_alarms else "none (spin-up / no coupling in this segment)"), flush=True)
                     run_kwargs["coupling"] = _make_coupling_callback(seg_start_target)
                     print(f"[DEBUG] run_kwargs['coupling'] set: {run_kwargs['coupling']}", flush=True)
                     run_kwargs["coupling_alarm_steps"] = seg_coupling_alarms if seg_coupling_alarms else None
-                    print(f"[耦合分段] run_kwargs['coupling_alarm_steps']={run_kwargs['coupling_alarm_steps']}", flush=True)
                 else:
                     print(f"[耦合分段] coupling_alarm_schedule is None, 跳过耦合", flush=True)
 
