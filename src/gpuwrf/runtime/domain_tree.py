@@ -799,12 +799,11 @@ def run_domain_tree_callbacks(
                         maybe_output(spec.child)
                         # Trigger coupling callback if at alarm step
                         if coupling is not None and spec.child in coupling_alarm_sets:
-                            print("[DBG-fusion]", spec.child,
-                                  "coupling_none=", coupling is None,
-                                  "in_sets=", spec.child in coupling_alarm_sets,
-                                  "own_step=", own_steps.get(spec.child), type(own_steps.get(spec.child)),
-                                  "alarm_val=", coupling_alarm_sets.get(spec.child),
-                                  "alarm_type=", type(coupling_alarm_sets.get(spec.child)), flush=True)
+                            if os.environ.get("GPUWRF_COUPLING_VERBOSE", "0") == "1":
+                                print("[DBG-fusion]", spec.child,
+                                      "own_step=", own_steps.get(spec.child),
+                                      "is_alarm=", own_steps[spec.child] in coupling_alarm_sets[spec.child],
+                                      "n_alarms=", len(coupling_alarm_sets[spec.child]), flush=True)
                             if own_steps[spec.child] in coupling_alarm_sets[spec.child]:
                                 coupling(spec.child, own_steps[spec.child], out[spec.child])
                                 events.append(("coupling", spec.child, own_steps[spec.child]))
@@ -2770,8 +2769,13 @@ def run_operational_domain_tree(
     effective_feedback = (
         tree.feedback_enabled if feedback_enabled is None else bool(feedback_enabled)
     )
-    # Disable fusion when coupling is enabled (coupling callbacks require Python loop)
-    has_coupling = coupling is not None and coupling_alarm_steps
+    # Disable fusion when coupling is enabled (coupling callbacks require Python loop).
+    # Keyed on the callback only, not on whether this segment has alarms: with a WRF
+    # spin-up the early segments carry no coupling alarms, and switching them to the
+    # fused cascade (a different executable, then back to eager once coupling starts)
+    # crashed (segfault at the 2nd spin-up segment). A coupled run therefore stays on
+    # the same eager per-domain path for its whole length.
+    has_coupling = coupling is not None
     runtime = prepared_runtime
     if (
         runtime is None

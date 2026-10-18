@@ -6,7 +6,7 @@ Single source of truth for coupling parameters.
 # WRF spin-up (hours): WRF runs alone first, no data is sent to the LBM.
 # Coupling starts at t = SPINUP_HOURS (WRF model time); the LBM is initialised
 # from the first WRF frame after spin-up. Total WRF forecast = SPINUP_HOURS + HOURS.
-SPINUP_HOURS = 12
+SPINUP_HOURS = 1
 COUPLING_START_SECONDS = SPINUP_HOURS * 3600
 
 # Coupled duration (hours), counted from the end of the spin-up
