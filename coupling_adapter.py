@@ -274,6 +274,13 @@ try:
         )
         print(f"[Rank 1] Double buffer ready: t=[{db.t0:.1f}, {db.t1:.1f}]s", flush=True)
 
+        # 诊断：首帧温度边界 vs 初始场（同一位置应几乎相同）+ 首帧地面热通量
+        if LBM_THERMAL and db.buf[0].theta_ad is not None:
+            from lbm_adapter.lbm_init import diagnose_theta_bc
+            diagnose_theta_bc(ad_coords_wrf, db.buf[0].theta_ad,
+                              label=f"init t_wrf={db.t0:.1f}s", ic_ad=ic_ad,
+                              origin_xy=(lbm_origin_x, lbm_origin_y), hfx=db.buf[0].hfx)
+
         n_bc = bc_coords_wrf.shape[0]
         print(f"[Rank 1] BC nodes: {n_bc}", flush=True)
 

@@ -199,4 +199,10 @@ class WRFRecvLoop:
 
         db.advance(new_frame)
         self.next_step += 1
+
+        # 诊断：每 30 帧（约 1 分钟）打印一次温度边界与地面热通量统计（只打印）
+        if self.ad_coords is not None and new_frame.theta_ad is not None and self.next_step % 30 == 0:
+            from lbm_adapter.lbm_init import diagnose_theta_bc
+            diagnose_theta_bc(self.ad_coords, new_frame.theta_ad,
+                              label=f"t_wrf={new_frame.t_wrf:.1f}s", hfx=new_frame.hfx)
         return True

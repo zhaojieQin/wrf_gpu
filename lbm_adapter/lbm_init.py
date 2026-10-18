@@ -530,3 +530,53 @@ def make_wrf_initial_temperature(
         return float(theta_mean[_idx(z, z0, nz_l)])
 
     return ic_ad, ic_ref
+
+
+# ---------------------------------------------------------------------------
+# 诊断：温度 Dirichlet 边界值（只打印，不改变计算）
+# ---------------------------------------------------------------------------
+
+def diagnose_theta_bc(ad_coords: np.ndarray, theta_ad: np.ndarray, label: str = "",
+                      ic_ad=None, origin_xy: tuple[float, float] = (0.0, 0.0),
+                      hfx: np.ndarray | None = None) -> None:
+    """按面（MX/PX/MY/PY/PZ）打印边界 θ−θ_ref 统计；可选与初始场 ic_ad 逐点比较。
+
+    ad_coords : (n_ad, 3) 节点坐标（x/y 为 WRF 参考系，z 为 AGL）
+    ic_ad     : 初始场函数 ic_ad(x, y, z)，参数为 LBM 坐标（x/y 减去 origin_xy）
+    hfx       : 地面热通量（W/m²，地面节点上），可选
+    """
+    c = np.asarray(ad_coords, dtype=np.float64)
+    th = np.asarray(theta_ad, dtype=np.float64)
+    x, y, z = c[:, 0], c[:, 1], c[:, 2]
+    dz = np.diff(np.unique(np.round(z, 6)))
+    tol = 0.5 * (dz[dz > 0].min() if dz.size and (dz > 0).any() else 1.0)
+    faces = {
+        "PZ": np.abs(z - z.max()) < tol,
+        "MX": np.abs(x - x.min()) < tol,
+        "PX": np.abs(x - x.max()) < tol,
+        "MY": np.abs(y - y.min()) < tol,
+        "PY": np.abs(y - y.max()) < tol,
+    }
+    ic_vals = None
+    if ic_ad is not None:
+        ox, oy = origin_xy
+        ic_vals = np.array([ic_ad(xi - ox, yi - oy, zi) for xi, yi, zi in c])
+    lines = [f"[diag θ_bc] {label} n={th.size}  θ−θ_ref all: [{th.min():.2f}, {th.max():.2f}] K"]
+    for name, m in faces.items():
+        if not m.any():
+            continue
+        low = m & (z < 100.0)
+        top = m & (z > z.max() - 100.0)
+        s = (f"  {name}: n={int(m.sum()):6d}  mean={th[m].mean():7.2f}"
+             f"  z<100m={th[low].mean() if low.any() else float('nan'):7.2f}"
+             f"  top100m={th[top].mean() if top.any() else float('nan'):7.2f}")
+        if ic_vals is not None:
+            d = th[m] - ic_vals[m]
+            s += f"  | BC−IC: mean={d.mean():+.3f} max|d|={np.abs(d).max():.3f}"
+            if low.any():
+                s += f" (z<100m mean {(th[low] - ic_vals[low]).mean():+.3f})"
+        lines.append(s)
+    if hfx is not None and np.size(hfx):
+        h = np.asarray(hfx, dtype=np.float64)
+        lines.append(f"  HFX (W/m², ground nodes): mean={h.mean():.2f} min={h.min():.2f} max={h.max():.2f}")
+    print("\n".join(lines), flush=True)
