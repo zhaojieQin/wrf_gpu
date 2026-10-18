@@ -241,7 +241,9 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
                         initial_condition_fn=None, bc_mode: str = "freestream",
                         thermal: ThermalConfig | None = None,
                         initial_condition_ad_fn=None,
-                        initial_reference_temperature_fn=None):
+                        initial_reference_temperature_fn=None,
+                        print_files: bool = True,
+                        probe_every_steps: int | None = None):
     """构造并返回 VirtualFluids Simulation 对象。
 
     Parameters
@@ -254,6 +256,8 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
                     None 时保持中性设置（地面 stress BC），行为与之前一致。
     initial_condition_ad_fn : ic_ad(x, y, z) -> θ − θ_ref（K），thermal 时使用
     initial_reference_temperature_fn : 同签名，初始局部参考温度（浮力/分层 SGS 用）
+    print_files   : 是否写全场 VTK（False 时只保留探针输出）
+    probe_every_steps : x–z 中间面（y≈L_y/2）瞬时探针的输出间隔（LBM 步）；None 不加探针
 
     Returns
     -------
@@ -280,7 +284,7 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
 
     para.set_output_path(str(cfg.output_path))
     para.set_output_prefix("wrf_lbm_coupled")
-    para.set_print_files(True)
+    para.set_print_files(print_files)
 
     para.set_velocity_LB(cfg.velocity_LB)
     para.set_viscosity_LB(cfg.viscosity_LB)
@@ -390,6 +394,27 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
         tm_factory.set_model_constant(thermal.sgs_constant)
         tm_factory.set_turbulence_model(thermal.turbulence_model)
         tm_factory.set_turbulence_model_advection_diffusion(thermal.turbulence_model_ad)
+
+    if probe_every_steps is not None:
+        # Streamwise x–z plane at mid-y. The probe samples every node inside the cuboid
+        # [x0, x0+Lx] x [y0, y0+Ly] x [z0, z0+Lz]; take a one-node-thick slab in y around
+        # the grid node closest to L_y/2 (VF nodes sit at -dx/2 + j*dx).
+        dx = cfg.dx
+        j_mid = int(round((0.5 * cfg.domain_length_y + 0.5 * dx) / dx))
+        y_node = -0.5 * dx + j_mid * dx
+        plane_probe = gpu.probes.Probe(
+            para, cuda_memory_manager, str(cfg.output_path), "xzPlaneMidY",
+            0, 1,                       # t_start_avg, t_avg (only instantaneous values used)
+            0, int(probe_every_steps),  # t_start_out, t_out
+            False, False,               # output_timeseries, average_every_timestep
+            thermal is not None,        # sample_scalar → also writes temperature
+        )
+        plane_probe.set_probe_plane(-dx, y_node - 0.5 * dx, -dx,
+                                    cfg.domain_length_x + 2 * dx, dx, cfg.domain_length_z + 2 * dx)
+        plane_probe.add_statistic(gpu.probes.Probe.Statistic.Instantaneous)
+        para.add_sampler(plane_probe)
+        print(f"[vf_setup] x–z plane probe at y={y_node:.2f} m, every {probe_every_steps} steps "
+              f"(≈{probe_every_steps * cfg.dt:.2f} s) -> {cfg.output_path}", flush=True)
 
     sim = gpu.Simulation(
         para,

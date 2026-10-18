@@ -82,6 +82,7 @@ try:
         print("[Rank 1] Starting LBM coupled simulation...", flush=True)
         from coupling_config import (
             HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
+            LBM_FULL_VTK_OUTPUT, LBM_PROBE_EVERY_STEPS,
             LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP,
         )
 
@@ -217,13 +218,21 @@ try:
                                                  bc_mode=LBM_BC_MODE,
                                                  thermal=thermal,
                                                  initial_condition_ad_fn=ic_ad,
-                                                 initial_reference_temperature_fn=ic_ref)
-        # 只输出最开始的几次 VTK（abl.cfg 的 tOut 远大于模拟时长，否则一次都不输出）
-        para.set_timestep_out(LBM_OUTPUT_EVERY_STEPS)
-        lbm_output_until_step = LBM_OUTPUT_EVERY_STEPS * LBM_OUTPUT_COUNT
-        print(f"[Rank 1] LBM VTK output: every {LBM_OUTPUT_EVERY_STEPS} steps, "
-              f"{LBM_OUTPUT_COUNT} outputs, off after step {lbm_output_until_step} "
-              f"(t≈{lbm_output_until_step * lbm_cfg.dt:.1f}s) -> {lbm_cfg.output_path}", flush=True)
+                                                 initial_reference_temperature_fn=ic_ref,
+                                                 print_files=LBM_FULL_VTK_OUTPUT,
+                                                 probe_every_steps=LBM_PROBE_EVERY_STEPS)
+        if LBM_FULL_VTK_OUTPUT:
+            # 只输出最开始的几次全场 VTK（abl.cfg 的 tOut 远大于模拟时长，否则一次都不输出）
+            para.set_timestep_out(LBM_OUTPUT_EVERY_STEPS)
+            lbm_output_until_step = LBM_OUTPUT_EVERY_STEPS * LBM_OUTPUT_COUNT
+            print(f"[Rank 1] LBM VTK output: every {LBM_OUTPUT_EVERY_STEPS} steps, "
+                  f"{LBM_OUTPUT_COUNT} outputs, off after step {lbm_output_until_step} "
+                  f"(t≈{lbm_output_until_step * lbm_cfg.dt:.1f}s) -> {lbm_cfg.output_path}", flush=True)
+        else:
+            # 不写全场 VTK：timestep_out=0 使 Simulation 跳过文件输出分支（只剩探针）
+            para.set_timestep_out(0)
+            lbm_output_until_step = None
+            print("[Rank 1] LBM full-field VTK output: off (plane probe only)", flush=True)
         sim.init_timers()
         print("[Rank 1] VirtualFluids simulation initialized.", flush=True)
 

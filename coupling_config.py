@@ -15,11 +15,16 @@ INTERVAL_SECONDS = D03_DT_SECONDS
 
 # LBM steps = HOURS * 3600 / D03_DT_SECONDS = 1 * 3600 / 2 = 1800
 
-# LBM VTK output: write only the first few outputs, then switch output off.
-# Each output is ~1-2 GB (≈21.9M nodes). 15 LBM steps ≈ one WRF frame (2 s).
-# Current setting: every LBM step for steps 1..5 (VF also writes the t=0 state).
+# LBM full-field VTK output (~1-2 GB per output, ≈21.9M nodes). Off by default.
+# When on: write every LBM_OUTPUT_EVERY_STEPS steps, LBM_OUTPUT_COUNT times, then stop.
+LBM_FULL_VTK_OUTPUT = False
 LBM_OUTPUT_EVERY_STEPS = 10
 LBM_OUTPUT_COUNT = 5
+
+# LBM plane probe: streamwise x–z plane at mid-y (y ≈ L_y/2, one node thick),
+# instantaneous u, v, w, rho (+ temperature when LBM_THERMAL), whole run.
+# ~57k nodes per output. 15 LBM steps ≈ one WRF frame (2 s). None → no probe.
+LBM_PROBE_EVERY_STEPS = 15
 
 # LBM lateral + roof boundary type:
 #   "velocity"   — fixed (Dirichlet) WRF velocity on all five open faces
