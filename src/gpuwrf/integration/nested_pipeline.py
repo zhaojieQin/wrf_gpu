@@ -2439,6 +2439,9 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         for d in range(2, target_idx + 1):
             domain_name = f"d{d:02d}"
             ratio_accumulated *= cadence_run.grid(domain_name).parent_grid_ratio
+        # Reused by every integration segment: re-opening the case (Gen2Run) between
+        # segments, after the GPU run + history output started, segfaulted.
+        coupling_ratio_accumulated = ratio_accumulated
 
         # Always couple at every d03 timestep, regardless of interval_seconds
         coupling_interval_steps = 1
@@ -2770,13 +2773,8 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 print(f"[DEBUG] About to check coupling_alarm_schedule: {coupling_alarm_schedule is not None}", flush=True)
                 if coupling_alarm_schedule is not None:
                     print(f"[耦合分段] seg={seg} start={start}", flush=True)
-                    target_domain = config.coupling_config.get('target_domain', f"d{config.max_dom:02d}")
-                    target_idx = int(target_domain[1:])
-                    ratio_accumulated = 1
-                    cadence_run_seg = Gen2Run(Path(config.input_dir))
-                    for d in range(2, target_idx + 1):
-                        domain_name = f"d{d:02d}"
-                        ratio_accumulated *= cadence_run_seg.grid(domain_name).parent_grid_ratio
+                    # parent-ratio product computed once at coupling init (no Gen2Run re-open here)
+                    ratio_accumulated = coupling_ratio_accumulated
                     print(f"[耦合分段] ratio_accumulated={ratio_accumulated}", flush=True)
                     seg_start_target = start * ratio_accumulated
                     seg_coupling_alarms = {}
