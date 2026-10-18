@@ -2780,17 +2780,22 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                     seg_coupling_alarms = {}
                     for domain_name, alarms in coupling_alarm_schedule.items():
                         seg_end_target = (start + seg) * ratio_accumulated
+                        # run_tree is seeded with initial_own_steps=own_steps, so its
+                        # step clock is GLOBAL across segments: keep alarms absolute
+                        # (segment-relative alarms never matched in segments > 1).
                         seg_alarms = tuple(
-                            alarm - seg_start_target
+                            alarm
                             for alarm in alarms
                             if seg_start_target < alarm <= seg_end_target
                         )
                         if seg_alarms:
                             seg_coupling_alarms[domain_name] = seg_alarms
                     print("[耦合分段] seg_coupling_alarms=" + (
-                        ", ".join(f"{d}: n={len(a)} [{a[0]}..{a[-1]}]" for d, a in seg_coupling_alarms.items())
+                        ", ".join(f"{d}: n={len(a)} [{a[0]}..{a[-1]}] (global steps)"
+                                  for d, a in seg_coupling_alarms.items())
                         if seg_coupling_alarms else "none (spin-up / no coupling in this segment)"), flush=True)
-                    run_kwargs["coupling"] = _make_coupling_callback(seg_start_target)
+                    # callback receives the global step already → no segment offset
+                    run_kwargs["coupling"] = _make_coupling_callback(0)
                     print(f"[DEBUG] run_kwargs['coupling'] set: {run_kwargs['coupling']}", flush=True)
                     run_kwargs["coupling_alarm_steps"] = seg_coupling_alarms if seg_coupling_alarms else None
                 else:
