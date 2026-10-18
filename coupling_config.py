@@ -43,3 +43,7 @@ LBM_BC_MODE = "velocity"
 LBM_THERMAL = True
 LBM_THETA_REF = 300.0          # K, reference potential temperature (θ − θ_ref is stored)
 LBM_RHO_CP = 1.225 * 1004.5    # J m^-3 K^-1, converts HFX [W/m^2] to kinematic flux [K m/s]
+# Temperature Dirichlet scheme on the five open faces:
+#   "interpolated"   → DirichletInterpolatedSlip (uses subgrid distance q, analogous to VelocityInterpolatedCompressible)
+#   "antibounceback" → DirichletAntiBounceBackSlip (previous behaviour)
+LBM_AD_DIRICHLET_BC = "interpolated"

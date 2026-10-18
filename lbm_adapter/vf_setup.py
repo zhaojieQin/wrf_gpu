@@ -231,6 +231,9 @@ class ThermalConfig:
     turbulence_model_ad: str = "AMDStratified"
     sgs_constant: float = 0.2
     gravity: float = 9.81
+    # 开放面温度 Dirichlet 格式："interpolated"（DirichletInterpolatedSlip，用子网格距离 q，
+    # 对应速度的 VelocityInterpolatedCompressible）或 "antibounceback"（DirichletAntiBounceBackSlip）
+    dirichlet_bc: str = "interpolated"
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +364,16 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
         bc_factory.set_surface_layer_boundary_condition(
             gpu.StressBC.StressBounceBackCompressible, gpu.SurfaceLayerBC.SurfaceHeatFlux)
         # Slip variant uses the local fluid velocity at the node (open boundary, not a wall)
+        ad_dirichlet_types = {
+            "interpolated": gpu.AdvectionDiffusionDirichletBC.DirichletInterpolatedSlip,
+            "antibounceback": gpu.AdvectionDiffusionDirichletBC.DirichletAntiBounceBackSlip,
+        }
+        if thermal.dirichlet_bc not in ad_dirichlet_types:
+            raise ValueError(f"Unknown thermal.dirichlet_bc {thermal.dirichlet_bc!r} "
+                             f"(expected one of {sorted(ad_dirichlet_types)})")
         bc_factory.set_advection_diffusion_dirichlet_boundary_condition(
-            gpu.AdvectionDiffusionDirichletBC.DirichletAntiBounceBackSlip)
+            ad_dirichlet_types[thermal.dirichlet_bc])
+        print(f"[vf_setup] temperature Dirichlet BC on open faces: {thermal.dirichlet_bc}", flush=True)
 
         diffusivity_lb = (cfg.viscosity / thermal.prandtl_number) * cfg.dt / (cfg.dx * cfg.dx)
         gravity_lb = thermal.gravity * cfg.dt * cfg.dt / cfg.dx

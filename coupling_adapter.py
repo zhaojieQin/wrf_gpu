@@ -83,7 +83,7 @@ try:
         from coupling_config import (
             HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
             LBM_FULL_VTK_OUTPUT, LBM_PROBE_EVERY_STEPS,
-            LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP,
+            LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP, LBM_AD_DIRICHLET_BC,
         )
 
         # ── lbm_adapter imports ──────────────────────────────────────────
@@ -202,7 +202,7 @@ try:
         ic_ad = ic_ref = None
         hfx_scale = None
         if LBM_THERMAL:
-            thermal = ThermalConfig(theta_ref=LBM_THETA_REF)
+            thermal = ThermalConfig(theta_ref=LBM_THETA_REF, dirichlet_bc=LBM_AD_DIRICHLET_BC)
             ic_ad, ic_ref = make_wrf_initial_temperature(
                 received_step0, static_ctx, ref,
                 lbm_origin_x, lbm_origin_y,
