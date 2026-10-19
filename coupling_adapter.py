@@ -314,6 +314,37 @@ try:
         n_bc = bc_coords_wrf.shape[0]
         print(f"[Rank 1] BC nodes: {n_bc}", flush=True)
 
+        # ── CPM：入流湍流的 cell perturbation（需要温度场）──────────────────
+        cpm = None
+        import coupling_config as _cc
+        if _cc.LBM_CPM_ENABLE:
+            if not LBM_THERMAL:
+                raise RuntimeError("LBM_CPM_ENABLE requires LBM_THERMAL (CPM perturbs the temperature field)")
+            from lbm_adapter.cpm import CPMConfig, CPMPerturber
+            cpm_cfg = CPMConfig(
+                cell_nodes=_cc.LBM_CPM_CELL_NODES, rows=_cc.LBM_CPM_ROWS,
+                offset_nodes=_cc.LBM_CPM_OFFSET_NODES, skip_levels=_cc.LBM_CPM_SKIP_LEVELS,
+                z_max_m=_cc.LBM_CPM_Z_MAX_M, zi_fraction=_cc.LBM_CPM_ZI_FRACTION,
+                stable_dthdz=_cc.LBM_CPM_STABLE_DTHDZ, conv_min_dthdz=_cc.LBM_CPM_CONV_MIN_DTHDZ,
+                ec=_cc.LBM_CPM_EC, cp=_cc.LBM_CPM_CP, gamma=_cc.LBM_CPM_GAMMA,
+                tp_min_s=_cc.LBM_CPM_TP_MIN_S, tp_max_s=_cc.LBM_CPM_TP_MAX_S, u0=_cc.LBM_CPM_U0,
+                angle_max_deg=_cc.LBM_CPM_ANGLE_MAX_DEG, stable_scheme=_cc.LBM_CPM_STABLE_SCHEME,
+                rim=_cc.LBM_CPM_RIM, theta_pm_max=_cc.LBM_CPM_THETA_PM_MAX,
+                momentum=_cc.LBM_CPM_MOMENTUM, momentum_alpha=_cc.LBM_CPM_MOMENTUM_ALPHA,
+                seed=_cc.LBM_CPM_SEED,
+            )
+            ad_coords_lbm = ad_coords_wrf.copy()
+            ad_coords_lbm[:, 0] -= lbm_origin_x
+            ad_coords_lbm[:, 1] -= lbm_origin_y
+            cpm = CPMPerturber(
+                sim, cpm_cfg, dx=lbm_cfg.dx,
+                lx=lbm_cfg.domain_length_x, ly=lbm_cfg.domain_length_y, lz=lbm_cfg.domain_length_z,
+                bc_coords=bc_coords_lbm, ad_coords=ad_coords_lbm,
+                theta_ref=ref.theta_ref, velocity_ratio=ref.u_ref, level=0,
+            )
+        else:
+            print("[Rank 1] CPM: off", flush=True)
+
         # ── 主循环 ───────────────────────────────────────────────────────
         loop = WRFRecvLoop(
             comm=comm,
@@ -340,6 +371,7 @@ try:
             bc_mode=LBM_BC_MODE,
             hfx_scale=hfx_scale,
             t_offset=lbm_t_offset,
+            cpm=cpm,
         )
 
         sim.finalize()

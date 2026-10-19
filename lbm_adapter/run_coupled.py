@@ -75,6 +75,7 @@ def run_lbm_coupled(
     bc_mode: str = "freestream",
     hfx_scale: float | None = None,
     t_offset: float = 0.0,
+    cpm=None,
 ) -> CouplingStats:
     """双缓冲耦合主循环。
 
@@ -93,6 +94,8 @@ def run_lbm_coupled(
     t_offset   : float  LBM 起点对应的 WRF 模式时间（秒）。WRF 先 spin-up 再耦合时，
                  WRF 帧时间是绝对时间，t_lbm = t_offset + lbm_step·dt_lbm 才能与之对齐。
                  默认 0（旧行为）。
+    cpm        : lbm_adapter.cpm.CPMPerturber | None  入流湍流的 cell perturbation；在每步推进前检查
+                 是否到刷新时刻，到了就把扰动一次性加入分布函数。None（默认）不扰动。
     para       : gpu.Parameter | None  与 sim 共享的 VF Parameter，仅 output_until_step 需要。
     output_until_step : int | None  此步算完后调用 para.set_timestep_out(0) 关闭 VTK 输出
                  （VF 每步重新读取 timestep_out）。None 表示不干预输出。
@@ -139,6 +142,10 @@ def run_lbm_coupled(
 
         # 4. 更新开放边界速度（velocity: 固定速度；freestream: GPU kernel 逐节点判断入流/出流）
         update_bc(sim, u, v, w, bc_mode, level=level)
+
+        # 4b. CPM：到刷新时刻时，用当前边界风/θ 生成扰动并一次性加入分布函数
+        if cpm is not None:
+            cpm.maybe_refresh(t_lbm, u, v, theta_ad=theta_ad, hfx=hfx)
 
         # 4. 推进一步
         sim.calculate_timestep(lbm_step)

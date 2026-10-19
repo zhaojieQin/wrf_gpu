@@ -55,3 +55,30 @@ LBM_RHO_CP = 1.225 * 1004.5    # J m^-3 K^-1, converts HFX [W/m^2] to kinematic 
 #   "interpolated"   → DirichletInterpolatedSlip (uses subgrid distance q, analogous to VelocityInterpolatedCompressible)
 #   "antibounceback" → DirichletAntiBounceBackSlip (previous behaviour)
 LBM_AD_DIRICHLET_BC = "interpolated"
+
+# Cell perturbation method (CPM) for inflow turbulence (needs LBM_THERMAL).
+# Muñoz-Esparza et al. 2015 (PoF), 2017 (JAMES), Muñoz-Esparza & Kosović 2018 (MWR); see lbm_adapter/cpm.py.
+# θ perturbations in 2-D cells (n_c × n_c nodes, one grid level each) along the lateral faces, weighted by
+# the inflow switch w_in, refreshed every t_p = Γ d_c / U_1 and seeded instantaneously into the GPU distributions.
+LBM_CPM_ENABLE = True
+LBM_CPM_CELL_NODES = 8           # cell side (grid nodes); 8 ≈ 83 m at dx = 10.4 m
+LBM_CPM_ROWS = 3                 # rows of cells along each lateral face
+LBM_CPM_OFFSET_NODES = 3         # first row starts this many nodes inside the boundary (no relaxation zone)
+LBM_CPM_SKIP_LEVELS = 3          # lowest fluid levels left unperturbed (2017)
+LBM_CPM_Z_MAX_M = 600.0          # m AGL, highest perturbed level (also kept 2 dx below the domain top)
+LBM_CPM_ZI_FRACTION = 2.0 / 3.0  # z_CP = fraction · z_i
+LBM_CPM_STABLE_DTHDZ = 0.014     # K/m, stable z_i: lowest height with dθ/dz below this (2017)
+LBM_CPM_CONV_MIN_DTHDZ = 0.003   # K/m, convective z_i = height of max dθ/dz; below this → no inversion in domain
+LBM_CPM_EC = 0.2                 # perturbation Eckert number, θ_pm = U_g² / (c_p Ec)
+LBM_CPM_CP = 1004.5              # J kg⁻¹ K⁻¹
+LBM_CPM_GAMMA = 1.0              # Γ = t_p U_1 / d_c (d_c = cell diagonal, U_1 = wind at first level)
+LBM_CPM_TP_MIN_S = 5.0           # s, clamp for t_p
+LBM_CPM_TP_MAX_S = 300.0         # s
+LBM_CPM_U0 = 0.5                 # m/s, w_in = ½[1 − tanh(u_n / u0)]
+LBM_CPM_ANGLE_MAX_DEG = None     # deg; e.g. 70 → no perturbation if wind vs inward normal exceeds it. None: off
+LBM_CPM_STABLE_SCHEME = "ec"     # stable regime amplitude: "ec" or "rim" (2018, Ri_m scaling)
+LBM_CPM_RIM = -1.0               # Ri_m for LBM_CPM_STABLE_SCHEME = "rim"
+LBM_CPM_THETA_PM_MAX = 2.0       # K, safety cap on the perturbation amplitude
+LBM_CPM_MOMENTUM = False         # also perturb u, v in the same cells (no literature optimum)
+LBM_CPM_MOMENTUM_ALPHA = 0.05    # u', v' amplitude as a fraction of the local wind speed
+LBM_CPM_SEED = 12345             # RNG seed (reproducible perturbations)
