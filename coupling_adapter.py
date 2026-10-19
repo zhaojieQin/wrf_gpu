@@ -40,20 +40,24 @@ try:
         print("[Rank 0] Starting WRF GPU forecast...", flush=True)
         from gpuwrf.integration.nested_pipeline import NestedPipelineConfig, execute_nested_pipeline
         from coupling_config import (
-            HOURS, INTERVAL_SECONDS, D03_DT_SECONDS, SPINUP_HOURS, COUPLING_START_SECONDS,
+            HOURS, COUPLING_EVERY_N_STEPS, SPINUP_HOURS, COUPLING_START_SECONDS,
+            WRF_CASE_DIR, RUN_DIR,
         )
+        print(f"[Rank 0] case={WRF_CASE_DIR}  run={RUN_DIR}  "
+              f"coupling every {COUPLING_EVERY_N_STEPS} d03 steps", flush=True)
         print(f"[Rank 0] WRF spin-up {SPINUP_HOURS} h (no coupling), then coupled {HOURS} h "
               f"(coupling starts at t={COUPLING_START_SECONDS} s)", flush=True)
 
         config = NestedPipelineConfig(
-            input_dir=Path('/home/zhaqi746/code/wrf_gpu/examples/SWiFT'),
-            output_dir=Path('/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi'),
-            proof_dir=Path('/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi/proofs'),
+            input_dir=Path(WRF_CASE_DIR),
+            output_dir=Path(RUN_DIR),
+            proof_dir=Path(RUN_DIR) / 'proofs',
             hours=SPINUP_HOURS + HOURS,
             max_dom=3,
             coupling_config={
                 'enabled': True,
-                'interval_seconds': INTERVAL_SECONDS,
+                # one frame every N target-domain steps (dt read from the case)
+                'interval_steps': COUPLING_EVERY_N_STEPS,
                 # no coupling before this WRF model time (spin-up)
                 'start_seconds': COUPLING_START_SECONDS,
                 'target_domain': 'd03',
@@ -87,7 +91,8 @@ try:
         os.environ['VF_MPI_USE_COMM_SELF'] = '1'
         print("[Rank 1] Starting LBM coupled simulation...", flush=True)
         from coupling_config import (
-            HOURS, D03_DT_SECONDS, LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
+            HOURS, COUPLING_EVERY_N_STEPS, WRF_CASE_DIR, RUN_DIR,
+            LBM_OUTPUT_EVERY_STEPS, LBM_OUTPUT_COUNT,
             LBM_FULL_VTK_OUTPUT, LBM_PROBE_EVERY_STEPS,
             LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP, LBM_AD_DIRICHLET_BC,
             SPINUP_HOURS, COUPLING_START_SECONDS,
@@ -107,24 +112,22 @@ try:
         from lbm_adapter.run_coupled import run_lbm_coupled
 
         # ── WRF 耦合参数（与 rank 0 coupling_config 保持一致）────────────
-        wrf_steps = int(HOURS * 3600 / D03_DT_SECONDS)
-        print(f"[Rank 1] WRF steps={wrf_steps} "
-              f"(HOURS={HOURS}, D03_DT_SECONDS={D03_DT_SECONDS})", flush=True)
 
         # ── VirtualFluids 域配置（从 .cfg 文件读取，单一权威来源）────────
         VF_CFG = Path('/home/zhaqi746/code/wrf_gpu/VirtualFluids/apps/gpu/AtmosphericBoundaryLayer/abl.cfg')
         lbm_cfg = WRFLBMConfig.from_cfg_file(
             config_path=VF_CFG,
             t_end_s=HOURS * 3600.0,
-            output_path=Path('/home/zhaqi746/code/wrf_gpu/runs/swift_coupled_mpi/lbm'),
+            output_path=Path(RUN_DIR) / 'lbm',
         )
 
         # ── 从 wrfinput_d03 读取静态量（terrain_height, DX/DY, z0_mean）──
-        WRFINPUT_D03 = Path('/home/zhaqi746/code/wrf_gpu/examples/SWiFT/wrfinput_d03')
+        WRFINPUT_D03 = Path(WRF_CASE_DIR) / 'wrfinput_d03'
         with nc.Dataset(WRFINPUT_D03, 'r') as ds:
             # HGT: (1, ny, nx) m MSL → squeeze to (ny, nx)
             terrain_height = np.asarray(ds.variables['HGT'][0], dtype=np.float64)
             dx_wrf = float(ds.DX)
+            dt_wrf = float(ds.DT)   # d03 timestep (s); frame interval = N × dt
             dy_wrf = float(ds.DY)
             # ZNT: (1, ny, nx) roughness length (m) — land-surface mean.
             # wrfinput from real.exe may not carry ZNT (it is a model-computed
@@ -138,6 +141,9 @@ try:
                 z0_mean = float(lbm_cfg.z0)
                 z0_source = 'abl.cfg RoughnessLength (ZNT not in wrfinput_d03)'
 
+        frame_dt = COUPLING_EVERY_N_STEPS * dt_wrf
+        print(f"[Rank 1] WRF frames={int(round(HOURS * 3600 / frame_dt))} (HOURS={HOURS}, every "
+              f"{COUPLING_EVERY_N_STEPS} × {dt_wrf:g}s = {frame_dt:g}s)  case={WRF_CASE_DIR}", flush=True)
         print(f"[Rank 1] wrfinput_d03: terrain shape={terrain_height.shape}  "
               f"dx={dx_wrf}m  dy={dy_wrf}m  z0_mean={z0_mean:.4f}m  ({z0_source})", flush=True)
 

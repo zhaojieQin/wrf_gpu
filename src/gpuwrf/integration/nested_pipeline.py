@@ -2425,7 +2425,6 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         from gpuwrf.wrf_lbm_coupling.subdomain import extract_subdomain
 
         target_domain = config.coupling_config.get('target_domain', f"d{config.max_dom:02d}")
-        interval_seconds = config.coupling_config['interval_seconds']
         target_dt = dt_by_domain[target_domain]
 
         # Initialize MPI sender
@@ -2443,8 +2442,27 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
         # segments, after the GPU run + history output started, segfaulted.
         coupling_ratio_accumulated = ratio_accumulated
 
-        # Always couple at every d03 timestep, regardless of interval_seconds
-        coupling_interval_steps = 1
+        # Coupling cadence: one frame every coupling_interval_steps target-domain steps.
+        #   'interval_steps'   (preferred) number of target steps per frame, independent of the dt;
+        #   'interval_seconds' (fallback)  model seconds per frame, must be a multiple of the target dt;
+        #   neither            → every target step (previous behaviour).
+        interval_steps_cfg = config.coupling_config.get('interval_steps')
+        interval_seconds_cfg = config.coupling_config.get('interval_seconds')
+        if interval_steps_cfg is not None:
+            coupling_interval_steps = int(interval_steps_cfg)
+            if coupling_interval_steps < 1:
+                raise ValueError(f"WRF-LBM coupling: interval_steps must be >= 1, got {interval_steps_cfg}")
+        elif interval_seconds_cfg is not None:
+            coupling_interval_steps = max(1, int(round(float(interval_seconds_cfg) / float(target_dt))))
+            if abs(coupling_interval_steps * float(target_dt)
+                   - max(float(interval_seconds_cfg), float(target_dt))) > 1e-6:
+                raise ValueError(
+                    f"WRF-LBM coupling: interval_seconds={interval_seconds_cfg} is not a multiple of the "
+                    f"{target_domain} timestep {target_dt} s"
+                )
+        else:
+            coupling_interval_steps = 1
+        interval_seconds = coupling_interval_steps * float(target_dt)
         temp_root_steps = int(round(float(config.hours) * 3600.0 / dt_by_domain[names[0]]))
         temp_target_steps = temp_root_steps * ratio_accumulated
         # Optional WRF spin-up: no coupling at or before start_seconds (default 0 = couple from step 1)
@@ -2460,7 +2478,8 @@ def execute_nested_pipeline(config: NestedPipelineConfig) -> dict[str, Any]:
                 f"(forecast hours={config.hours}, target_dt={target_dt})"
             )
         coupling_alarm_schedule = {target_domain: coupling_alarms}
-        print(f"[耦合初始化] target_domain={target_domain} interval_seconds={interval_seconds} "
+        print(f"[耦合初始化] target_domain={target_domain} dt={float(target_dt):g}s "
+              f"interval={coupling_interval_steps} steps ({interval_seconds:g}s) "
               f"start_seconds={coupling_start_seconds:g} (spin-up {coupling_start_step} {target_domain} steps) "
               f"coupling_alarms count={len(coupling_alarms)} "
               f"first={coupling_alarms[0]} last={coupling_alarms[-1]} "

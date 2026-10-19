@@ -12,14 +12,17 @@ COUPLING_START_SECONDS = SPINUP_HOURS * 3600
 # Coupled duration (hours), counted from the end of the spin-up
 HOURS = 1
 
-# d03 timestep (seconds): time_step=18 / (ratio_d02=3 * ratio_d03=3) = 2s
-# Coupling fires every d03 timestep, so interval = target_dt
-D03_DT_SECONDS = 2
+# WRF case (input dir with namelist.input, wrfinput_d01..d03, wrfbdy_d01) and run output dir.
+# SWiFT_100m: d01 2.5 km / d02 500 m / d03 100 m, centred on the SWiFT site, ERA5-driven
+#             (time_step=10 s, ratio 5 → d03 dt = 0.4 s).
+# SWiFT     : previous 27/9/3 km case (time_step=18 s, ratio 3 → d03 dt = 2 s).
+# The d03 timestep is read from the case (namelist / wrfinput_d03), nothing to keep in sync here.
+WRF_CASE_DIR = "/home/zhaqi746/code/wrf_gpu/examples/SWiFT_100m"
+RUN_DIR = "/home/zhaqi746/code/wrf_gpu/runs/swift100m_coupled_mpi"
 
-# Coupling interval (seconds) — kept for reference, not used for alarm scheduling
-INTERVAL_SECONDS = D03_DT_SECONDS
-
-# LBM steps = HOURS * 3600 / D03_DT_SECONDS = 1 * 3600 / 2 = 1800
+# Coupling cadence: one WRF frame is sent to the LBM every COUPLING_EVERY_N_STEPS d03 timesteps.
+#   frame interval = N × d03 dt  (SWiFT_100m: 5 × 0.4 s = 2 s ≈ 15 LBM steps; SWiFT 3 km: N = 1 → 2 s)
+COUPLING_EVERY_N_STEPS = 5
 
 # LBM full-field VTK output (~1-2 GB per output, ≈21.9M nodes). Off by default.
 # When on: write every LBM_OUTPUT_EVERY_STEPS steps, LBM_OUTPUT_COUNT times, then stop.
