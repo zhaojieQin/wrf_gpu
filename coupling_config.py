@@ -6,11 +6,14 @@ Single source of truth for coupling parameters.
 # WRF spin-up (hours): WRF runs alone first, no data is sent to the LBM.
 # Coupling starts at t = SPINUP_HOURS (WRF model time); the LBM is initialised
 # from the first WRF frame after spin-up. Total WRF forecast = SPINUP_HOURS + HOURS.
-SPINUP_HOURS = 1
+# Diurnal-cycle validation (SWiFT, 大气稳定度与风力机尾流日周期演变研究 §3.5):
+#   WRF starts 2013-11-07 18 UTC (namelist), 12 h spin-up → coupling 2013-11-08 06 UTC
+#   (00:00 LST, LST = UTC−6) to 2013-11-09 06 UTC (24:00 LST); wrfbdy_d01 ends at 11-09 06 UTC.
+SPINUP_HOURS = 12
 COUPLING_START_SECONDS = SPINUP_HOURS * 3600
 
 # Coupled duration (hours), counted from the end of the spin-up
-HOURS = 1
+HOURS = 24
 
 # WRF case (input dir with namelist.input, wrfinput_d01..d03, wrfbdy_d01) and run output dir.
 # SWiFT_100m: d01 2.5 km / d02 500 m / d03 100 m, centred on the SWiFT site, ERA5-driven
@@ -24,6 +27,20 @@ RUN_DIR = "/home/zhaqi746/code/wrf_gpu/runs/swift100m_coupled_mpi"
 #   frame interval = N × d03 dt  (SWiFT_100m: 5 × 0.4 s = 2 s ≈ 15 LBM steps; SWiFT 3 km: N = 1 → 2 s)
 COUPLING_EVERY_N_STEPS = 5
 
+# LBM domain (overrides abl.cfg geometry; the .cfg file itself is not changed).
+#   4 × 4 × 1.6 km at dx = 10 m → 400 × 400 × 160 nodes (≈25.6M). The tower sits at the domain
+#   centre, ~2 km downstream of the SSW inflow faces (CPM turbulence needs fetch).
+#   None → abl.cfg values (6H × 4H × H, dx = H / NodesPerBoundaryLayerHeight).
+LBM_DOMAIN_LX = 4000.0
+LBM_DOMAIN_LY = 4000.0
+LBM_DOMAIN_LZ = 1600.0
+LBM_DX = 10.0
+# LBM timestep (s). None → from abl.cfg Ma (dx = 10 m, H = 1.6 km → dt ≈ 0.119 s, dx/dt ≈ 84 m/s:
+# lattice Mach √3·U·dt/dx ≈ 0.31 at 15 m/s, 0.41 at 20 m/s). The night low-level jet and the winds
+# near 1.6 km can exceed 15 m/s; if [lbm_init] warns about Mach > 0.3, set e.g. 0.06 s
+# (Mach ≈ 0.21 at 20 m/s, twice the LBM steps).
+LBM_DT_S = None
+
 # LBM full-field VTK output (~1-2 GB per output, ≈21.9M nodes). Off by default.
 # When on: write every LBM_OUTPUT_EVERY_STEPS steps, LBM_OUTPUT_COUNT times, then stop.
 LBM_FULL_VTK_OUTPUT = False
@@ -32,8 +49,23 @@ LBM_OUTPUT_COUNT = 5
 
 # LBM plane probe: streamwise x–z plane at mid-y (y ≈ L_y/2, one node thick),
 # instantaneous u, v, w, rho (+ temperature when LBM_THERMAL), whole run.
-# ~57k nodes per output. 15 LBM steps ≈ one WRF frame (2 s). None → no probe.
-LBM_PROBE_EVERY_STEPS = 15
+# ~64k nodes per output. 24 h run: 500 steps ≈ 60 s → ~1450 outputs (15 steps would give ~48k).
+# None → no probe.
+LBM_PROBE_EVERY_STEPS = 500
+
+# Diurnal-cycle validation sampling (lbm_adapter/validation.py → RUN_DIR/lbm/val*, RUN_DIR/validation/;
+# post-processing: scripts/validate_swift.py).
+VALIDATION_ENABLE = True
+# TTU 200 m tower (lat, lon). None → LBM domain centre (the d03 / LBM domain is centred on the
+# SWiFT site 33.6105 N, 102.0505 W). Must lie inside the LBM domain.
+VALIDATION_TOWER_LATLON = None
+VALIDATION_TOWER_ZMAX_M = 1500.0       # tower column: every LBM node from the ground up to this height
+VALIDATION_TOWER_EVERY_S = 1.0         # tower time series sampling (≈1 Hz)
+VALIDATION_TOWER_WRITE_EVERY_S = 300.0 # tower file flush interval (GPU buffer = this / dt steps)
+VALIDATION_PLANAR_EVERY_S = 60.0       # horizontal planar averages (profiles of means / covariances)
+VALIDATION_HUB_PLANE_Z_M = 70.0        # hub-height horizontal plane (2 MW hub, §3.5)
+VALIDATION_HUB_PLANE_EVERY_S = 600.0   # None → no hub plane
+VALIDATION_WRF_FOOTPRINT_EVERY_S = 60.0  # WRF mean profile over the LBM footprint
 
 # LBM lateral + roof boundary type:
 #   "velocity"   — fixed (Dirichlet) WRF velocity on all five open faces

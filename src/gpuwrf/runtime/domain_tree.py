@@ -2769,13 +2769,12 @@ def run_operational_domain_tree(
     effective_feedback = (
         tree.feedback_enabled if feedback_enabled is None else bool(feedback_enabled)
     )
-    # Disable fusion when coupling is enabled (coupling callbacks require Python loop).
-    # Keyed on the callback only, not on whether this segment has alarms: with a WRF
-    # spin-up the early segments carry no coupling alarms, and switching them to the
-    # fused cascade (a different executable, then back to eager once coupling starts)
-    # crashed (segfault at the 2nd spin-up segment). A coupled run therefore stays on
-    # the same eager per-domain path for its whole length.
-    has_coupling = coupling is not None
+    # Disable fusion only for segments that carry coupling alarms (coupling callbacks
+    # require the Python loop). Segments without alarms (e.g. the WRF spin-up before
+    # coupling starts) keep the fused cascade. The earlier segfault at the 2nd spin-up
+    # segment came from re-opening Gen2Run per segment (fixed in nested_pipeline), not
+    # from switching between the fused and eager paths.
+    has_coupling = coupling is not None and bool(coupling_alarm_steps)
     runtime = prepared_runtime
     if (
         runtime is None

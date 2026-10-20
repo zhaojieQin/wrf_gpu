@@ -139,6 +139,8 @@ class WRFRecvLoop:
     source     : int  WRF rank（默认 0）
     barrier_after_meta : bool  透传给 recv_next_wrf_step（默认 True）
     ad_coords  : (n_ad, 3)  温度 Dirichlet 边界节点坐标（WRF 参考系 x/y，z 为 AGL），或 None。
+    on_frame   : callable(received: dict) | None，每收到一帧原始数据就调用一次
+                 （如 validation.WRFTowerSampler，记录 WRF 测风塔廓线）；None 不调用。
     eof_received : bool  是否已收到 EOF（内部状态，不要手动设置）
     """
     comm: object
@@ -150,6 +152,7 @@ class WRFRecvLoop:
     sl_coords: np.ndarray | None = None
     barrier_after_meta: bool = True
     ad_coords: np.ndarray | None = None
+    on_frame: object | None = None
     eof_received: bool = field(default=False, init=False)
 
     def maybe_advance(self, t_lbm_s: float, db: WRFDoubleBuffer) -> bool:
@@ -183,6 +186,9 @@ class WRFRecvLoop:
             raise RuntimeError(
                 f"WRFRecvLoop: failed to receive step {self.next_step}: {exc}"
             ) from exc
+
+        if self.on_frame is not None:
+            self.on_frame(raw)
 
         new_frame = _make_wrf_frame(raw, self.static_ctx, self.bc_coords, self.ref,
                                     sl_coords=self.sl_coords, ad_coords=self.ad_coords)

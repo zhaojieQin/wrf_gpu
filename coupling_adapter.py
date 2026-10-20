@@ -96,6 +96,8 @@ try:
             LBM_FULL_VTK_OUTPUT, LBM_PROBE_EVERY_STEPS,
             LBM_BC_MODE, LBM_THERMAL, LBM_THETA_REF, LBM_RHO_CP, LBM_AD_DIRICHLET_BC,
             SPINUP_HOURS, COUPLING_START_SECONDS,
+            LBM_DOMAIN_LX, LBM_DOMAIN_LY, LBM_DOMAIN_LZ, LBM_DX, LBM_DT_S,
+            VALIDATION_ENABLE,
         )
 
         # ── lbm_adapter imports ──────────────────────────────────────────
@@ -115,11 +117,20 @@ try:
 
         # ── VirtualFluids 域配置（从 .cfg 文件读取，单一权威来源）────────
         VF_CFG = Path('/home/zhaqi746/code/wrf_gpu/VirtualFluids/apps/gpu/AtmosphericBoundaryLayer/abl.cfg')
+        # Domain / dx / dt overrides from coupling_config (None → abl.cfg values)
         lbm_cfg = WRFLBMConfig.from_cfg_file(
             config_path=VF_CFG,
             t_end_s=HOURS * 3600.0,
             output_path=Path(RUN_DIR) / 'lbm',
+            domain_length_x=LBM_DOMAIN_LX,
+            domain_length_y=LBM_DOMAIN_LY,
+            domain_length_z=LBM_DOMAIN_LZ,
+            dx=LBM_DX,
+            dt=LBM_DT_S,
         )
+        print(f"[Rank 1] LBM domain {lbm_cfg.domain_length_x:.0f} × {lbm_cfg.domain_length_y:.0f} × "
+              f"{lbm_cfg.domain_length_z:.0f} m, dx={lbm_cfg.dx:g} m, dt={lbm_cfg.dt:.4f} s "
+              f"(dx/dt={lbm_cfg.velocity_ratio:.1f} m/s, Ma={lbm_cfg.mach:.3f} at u_ref)", flush=True)
 
         # ── 从 wrfinput_d03 读取静态量（terrain_height, DX/DY, z0_mean）──
         WRFINPUT_D03 = Path(WRF_CASE_DIR) / 'wrfinput_d03'
@@ -129,6 +140,10 @@ try:
             dx_wrf = float(ds.DX)
             dt_wrf = float(ds.DT)   # d03 timestep (s); frame interval = N × dt
             dy_wrf = float(ds.DY)
+            # for the validation tower position and the run metadata
+            xlat = np.asarray(ds.variables['XLAT'][0], dtype=np.float64)
+            xlong = np.asarray(ds.variables['XLONG'][0], dtype=np.float64)
+            wrf_start_date = str(getattr(ds, 'START_DATE', ''))
             # ZNT: (1, ny, nx) roughness length (m) — land-surface mean.
             # wrfinput from real.exe may not carry ZNT (it is a model-computed
             # diagnostic); fall back to the VF ground roughness from abl.cfg,
@@ -172,6 +187,47 @@ try:
         print(f"[Rank 1] LBM origin in WRF coords: "
               f"x={lbm_origin_x:.0f}m  y={lbm_origin_y:.0f}m  "
               f"(center-aligned, WRF SW corner = origin)", flush=True)
+
+        # ── 日循环验证：虚拟测风塔位置（LBM 节点列）+ VF 探针 ─────────────
+        val_cfg = None
+        val_samplers = None
+        tower_x = tower_y = None
+        tower_z = None
+        if VALIDATION_ENABLE:
+            import coupling_config as _vc
+            from lbm_adapter.validation import (
+                ValidationConfig, latlon_to_wrf_xy, tower_column_nodes, make_lbm_samplers,
+            )
+            val_cfg = ValidationConfig(
+                tower_latlon=_vc.VALIDATION_TOWER_LATLON,
+                tower_zmax_m=_vc.VALIDATION_TOWER_ZMAX_M,
+                tower_every_s=_vc.VALIDATION_TOWER_EVERY_S,
+                tower_write_every_s=_vc.VALIDATION_TOWER_WRITE_EVERY_S,
+                planar_every_s=_vc.VALIDATION_PLANAR_EVERY_S,
+                hub_plane_z_m=_vc.VALIDATION_HUB_PLANE_Z_M,
+                hub_plane_every_s=_vc.VALIDATION_HUB_PLANE_EVERY_S,
+                wrf_footprint_every_s=_vc.VALIDATION_WRF_FOOTPRINT_EVERY_S,
+            )
+            if val_cfg.tower_latlon is None:
+                tx_l, ty_l = 0.5 * lbm_cfg.domain_length_x, 0.5 * lbm_cfg.domain_length_y
+                tower_src = "LBM domain centre"
+            else:
+                lat_t, lon_t = val_cfg.tower_latlon
+                tx_w, ty_w = latlon_to_wrf_xy(lat_t, lon_t, xlat, xlong, dx_wrf, dy_wrf)
+                tx_l, ty_l = tx_w - lbm_origin_x, ty_w - lbm_origin_y
+                tower_src = f"lat/lon {lat_t:.4f}, {lon_t:.4f}"
+            margin = 3 * lbm_cfg.dx
+            if not (margin <= tx_l <= lbm_cfg.domain_length_x - margin
+                    and margin <= ty_l <= lbm_cfg.domain_length_y - margin):
+                raise RuntimeError(f"Validation tower ({tower_src}) at LBM (x={tx_l:.0f}, y={ty_l:.0f}) m "
+                                   "is outside the LBM domain")
+            tower_x, tower_y, tower_z = tower_column_nodes(
+                tx_l, ty_l, lbm_cfg.dx, lbm_cfg.domain_length_z, val_cfg.tower_zmax_m)
+            print(f"[Rank 1] validation tower ({tower_src}): LBM node column x={tower_x:.1f} "
+                  f"y={tower_y:.1f} m (WRF x={tower_x + lbm_origin_x:.0f} y={tower_y + lbm_origin_y:.0f} m), "
+                  f"{tower_z.size} levels up to {tower_z[-1]:.1f} m", flush=True)
+            val_samplers = make_lbm_samplers(val_cfg, lbm_cfg, (tower_x, tower_y), tower_z,
+                                             sample_scalar=bool(LBM_THERMAL))
 
         def _add_xy_offset(coords: np.ndarray) -> np.ndarray:
             """bc/sl coords (n, 3): add (lbm_origin_x, lbm_origin_y) to x/y."""
@@ -256,7 +312,8 @@ try:
                                                  initial_condition_ad_fn=ic_ad,
                                                  initial_reference_temperature_fn=ic_ref,
                                                  print_files=LBM_FULL_VTK_OUTPUT,
-                                                 probe_every_steps=LBM_PROBE_EVERY_STEPS)
+                                                 probe_every_steps=LBM_PROBE_EVERY_STEPS,
+                                                 extra_samplers=val_samplers)
         if LBM_FULL_VTK_OUTPUT:
             # 只输出最开始的几次全场 VTK（abl.cfg 的 tOut 远大于模拟时长，否则一次都不输出）
             para.set_timestep_out(LBM_OUTPUT_EVERY_STEPS)
@@ -296,10 +353,38 @@ try:
                   f"surface-layer nodes: {0 if sl_coords_wrf is None else sl_coords_wrf.shape[0]}  "
                   f"hfx_scale={hfx_scale:.3e}", flush=True)
 
+        # ── 日循环验证：WRF 测风塔采样器 + 运行元数据 ─────────────────────
+        wrf_tower = None
+        val_dir = Path(RUN_DIR) / 'validation'
+        if VALIDATION_ENABLE:
+            from lbm_adapter.validation import WRFTowerSampler, write_meta
+            wrf_tower = WRFTowerSampler(
+                val_dir / 'wrf_tower.nc', static_ctx,
+                (tower_x + lbm_origin_x, tower_y + lbm_origin_y), tower_z,
+                (lbm_origin_x, lbm_origin_x + lbm_cfg.domain_length_x,
+                 lbm_origin_y, lbm_origin_y + lbm_cfg.domain_length_y),
+                val_cfg.wrf_footprint_every_s,
+            )
+            wrf_tower(received_step0)
+            write_meta(
+                val_dir / 'meta.json',
+                wrf_start_date=wrf_start_date, lst_offset_hours=-6.0,
+                coupling_start_s=float(COUPLING_START_SECONDS), hours=float(HOURS),
+                theta_ref=float(ref.theta_ref), dt_lbm=float(lbm_cfg.dt), dx_lbm=float(lbm_cfg.dx),
+                domain=[lbm_cfg.domain_length_x, lbm_cfg.domain_length_y, lbm_cfg.domain_length_z],
+                lbm_origin_wrf=[lbm_origin_x, lbm_origin_y], dx_wrf=dx_wrf,
+                tower_lbm=[tower_x, tower_y], tower_z=tower_z,
+                lbm_output_dir=lbm_cfg.output_path, probe_every_steps=LBM_PROBE_EVERY_STEPS,
+                validation=val_cfg,
+            )
+            print(f"[Rank 1] validation output: {val_dir} and {lbm_cfg.output_path}/val*", flush=True)
+
         # ── 接收 step=1，建立双缓冲 ───────────────────────────────────
         print("[Rank 1] Receiving WRF step=1...", flush=True)
         received_step1 = recv_next_wrf_step(comm, step=1, source=0)
         print(f"[Rank 1] step=1 received, t_wrf={received_step1.get('__wrf_time_s', 0):.1f}s", flush=True)
+        if wrf_tower is not None:
+            wrf_tower(received_step1)
 
         db = init_lbm_from_wrf(
             sim, received_step0, received_step1, static_ctx, ref,
@@ -361,6 +446,7 @@ try:
             source=0,
             sl_coords=sl_coords_wrf,
             ad_coords=ad_coords_wrf,
+            on_frame=wrf_tower,
         )
 
         print(f"[Rank 1] Entering main loop: n_steps={lbm_cfg.n_steps}", flush=True)
@@ -381,6 +467,8 @@ try:
         )
 
         sim.finalize()
+        if wrf_tower is not None:
+            wrf_tower.close()
         print(f"[Rank 1] Simulation done. "
               f"steps={stats.n_steps_run}  advances={stats.n_advances}  "
               f"t_lbm_end={stats.t_lbm_end:.2f}s", flush=True)

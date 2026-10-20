@@ -83,6 +83,9 @@ class WRFLBMConfig:
         output_path: str | Path | None = None,
         domain_length_x: float | None = None,
         domain_length_y: float | None = None,
+        domain_length_z: float | None = None,
+        dx: float | None = None,
+        dt: float | None = None,
     ) -> "WRFLBMConfig":
         """从 VirtualFluids .cfg 文件读取物理参数，构造 WRFLBMConfig。
 
@@ -93,6 +96,11 @@ class WRFLBMConfig:
         output_path     : 输出目录。若为 None，使用 .cfg 中的 Path 键。
         domain_length_x : x 方向域长（m）。若为 None，用 6 × BoundaryLayerHeight。
         domain_length_y : y 方向域长（m）。若为 None，用 4 × BoundaryLayerHeight。
+        domain_length_z : z 方向域高（m）。若为 None，用 BoundaryLayerHeight。
+        dx              : 格距（m）。若为 None，用 domain_length_z / NodesPerBoundaryLayerHeight。
+        dt              : LBM 时间步长（s）。若为 None，由 .cfg 的 Ma 决定
+                          （dt = dx·Ma/(√3·u_ref)）；给定时反推 Ma。
+                          以上三个覆盖量都不改 .cfg 文件本身（VF 原有算例不受影响）。
 
         从 .cfg 读取的键（兼容 abl.cfg 和 boundary_layer/configBoundaryLayer.cfg）
         -----------------------------------------------------------------------
@@ -151,10 +159,14 @@ class WRFLBMConfig:
         mach   = _get_float("Ma", "Ma")
         t_out  = _get_float("tOut", "tOut", default=100.0)
 
-        dx = H / nz
+        if domain_length_z is not None:
+            H = float(domain_length_z)
+        dx = float(dx) if dx is not None else H / nz
 
         # u_ref = 0.5 × log-law mean at top（与 boundary_layer.py 第94行约定一致）
         u_ref = 0.5 * u_star / kappa * math.log(H / z0)
+        if dt is not None:
+            mach = float(dt) * math.sqrt(3) * u_ref / dx
 
         # 域尺寸默认值（与 boundary_layer.py: length = [6,4,1]*H 一致）
         lx = domain_length_x if domain_length_x is not None else 6.0 * H
@@ -246,7 +258,8 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
                         initial_condition_ad_fn=None,
                         initial_reference_temperature_fn=None,
                         print_files: bool = True,
-                        probe_every_steps: int | None = None):
+                        probe_every_steps: int | None = None,
+                        extra_samplers=None):
     """构造并返回 VirtualFluids Simulation 对象。
 
     Parameters
@@ -261,6 +274,8 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
     initial_reference_temperature_fn : 同签名，初始局部参考温度（浮力/分层 SGS 用）
     print_files   : 是否写全场 VTK（False 时只保留探针输出）
     probe_every_steps : x–z 中间面（y≈L_y/2）瞬时探针的输出间隔（LBM 步）；None 不加探针
+    extra_samplers : callable(para, cuda_memory_manager) | None，在 Simulation 构造前调用，
+                     用于添加额外的 VF 探针（如日循环验证的虚拟测风塔，见 lbm_adapter/validation.py）
 
     Returns
     -------
@@ -426,6 +441,9 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
         para.add_sampler(plane_probe)
         print(f"[vf_setup] x–z plane probe at y={y_node:.2f} m, every {probe_every_steps} steps "
               f"(≈{probe_every_steps * cfg.dt:.2f} s) -> {cfg.output_path}", flush=True)
+
+    if extra_samplers is not None:
+        extra_samplers(para, cuda_memory_manager)
 
     sim = gpu.Simulation(
         para,
