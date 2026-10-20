@@ -6,10 +6,10 @@ Probe arrays (VF Probe, Statistic.Instantaneous): vx, vy, vz [m/s], rho, phi [K,
 
 Examples
 --------
-  python plot.py                                         # all files in the default run dir, vx vz phi
-  python plot.py --dir runs/swift100m_coupled_mpi/lbm --vars vx phi --every 5
-  python plot.py --vars vx --vmin -8 --vmax 2 --gif
-  python plot.py --t0 3600 --dt 0.130594 --probe-every 15  # titles with model time
+  python plotSwift100.py                                         # all files in the default run dir, vx vz phi
+  python plotSwift100.py --dir runs/swift100m_coupled_mpi/lbm --vars vx phi --every 5
+  python plotSwift100.py --vars vx --vmin -8 --vmax 2 --gif
+  python plotSwift100.py --t0 3600 --dt 0.130594 --probe-every 15  # titles with model time
 
 Reader: uses the `vtk` package if installed (pip install vtk), else `meshio` (pip install meshio).
 """
@@ -26,7 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-DEFAULT_DIR = "/home/zhaqi746/code/wrf_gpu/runs/swift100m_coupled_mpi/lbm"
+DEFAULT_DIR = "./runs/swift100m_coupled_mpi/lbm"
 UNITS = {"vx": "m/s", "vy": "m/s", "vz": "m/s", "rho": "-", "phi": "K (θ−θ_ref)"}
 CMAPS = {"vx": "RdYlBu_r", "vy": "RdYlBu_r", "vz": "RdBu_r", "rho": "viridis", "phi": "RdYlBu_r"}
 
