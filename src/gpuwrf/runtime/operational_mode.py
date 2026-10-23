@@ -4182,6 +4182,37 @@ def _advected_scalar_species(namelist: "OperationalNamelist") -> tuple[str, ...]
     return _MOISTURE_SPECIES
 
 
+# mp_physics ids whose scheme predicts the ice / rain number concentration (WRF Registry
+# QNI / QNR in the ``scalar`` array): Thompson 8/28, Morrison 10/40; WDM5/6/7 (14/16/26)
+# carry QNR only. Single-moment schemes (e.g. WSM6, mp=6) have neither field in WRF.
+_MP_PREDICTS_NI = frozenset({8, 10, 28, 40})
+_MP_PREDICTS_NR = frozenset({8, 10, 14, 16, 26, 28, 40})
+
+
+def _nested_number_species(namelist: "OperationalNamelist") -> tuple[str, ...]:
+    """QNI/QNR members the active microphysics actually predicts (nested scalar path).
+
+    The live-nest scalar update transports and boundary-forces Ni/Nr. For a scheme
+    without these fields (WSM6 etc.) the State still carries the leaves, but they are
+    meaningless: the child cold-starts at 0 while the parent leaf holds a default, and
+    transporting/forcing that jump with the unlimited scalar stencil diverged to inf
+    (SWiFT 100 m, mp=6, d02/d03 at 7 h). Inactive members are left untouched, as in WRF
+    where they do not exist for that scheme. Static (mp_physics is a jit static aux).
+    """
+
+    mp = int(namelist.mp_physics)
+    return tuple(
+        name
+        for name, ids in (("Ni", _MP_PREDICTS_NI), ("Nr", _MP_PREDICTS_NR))
+        if mp in ids
+    )
+
+
+def _nested_inactive_number_species(namelist: "OperationalNamelist") -> tuple[str, ...]:
+    active = _nested_number_species(namelist)
+    return tuple(name for name in ("Ni", "Nr") if name not in active)
+
+
 def _scalar_transport_coupled_tendencies(
     haloed: State,
     namelist: OperationalNamelist,
@@ -4285,6 +4316,7 @@ def _nested_number_scalar_coupled_tendencies(
     rk_step: int,
     step_origin: State,
     transport_velocities: CoupledVelocities,
+    species: tuple[str, ...] = ("Ni", "Nr"),
 ) -> tuple[jax.Array, ...]:
     """Candidate-only pristine ``other_scalar_advance`` for QNI and QNR.
 
@@ -4292,7 +4324,8 @@ def _nested_number_scalar_coupled_tendencies(
     ``solve_em.F:2774-2869`` therefore transports them with ``scalar_adv_opt``
     before adding the same RK1-frozen boundary tendency and calling
     ``rk_update_scalar``.  The production State already carries both fields;
-    this adds no interface leaf or loop transfer.
+    this adds no interface leaf or loop transfer.  ``species`` restricts the
+    transport to the members the scheme predicts (``_nested_number_species``).
     """
 
     return _scalar_transport_coupled_tendencies(
@@ -4300,7 +4333,7 @@ def _nested_number_scalar_coupled_tendencies(
         namelist,
         rk_step=int(rk_step),
         step_origin=step_origin,
-        species=("Ni", "Nr"),
+        species=tuple(species),
         advection_opt=int(namelist.scalar_adv_opt),
         transport_velocities=transport_velocities,
     )
@@ -4429,6 +4462,7 @@ def _nested_scalar_stage_tendencies(
     frozen_boundary_tendencies: tuple[jax.Array, ...],
     config: BoundaryConfig,
     msfty: jax.Array,
+    inactive_species: tuple[str, ...] = (),
 ) -> tuple[tuple[str, ...], tuple[jax.Array, ...]]:
     """Merge evolving scalar advection with RK1-frozen WRF boundary tendency.
 
@@ -4438,7 +4472,8 @@ def _nested_scalar_stage_tendencies(
     step-start scalar/mass.  The live nested path is always non-periodic in this
     runtime, matching pristine WRF's four-sided limits.  Optional advected
     species without a represented boundary record retain the same map-scaled
-    advection semantics.
+    advection semantics.  ``inactive_species`` (number concentrations the active
+    microphysics does not predict) receive no update at all.
     """
 
     advected = {
@@ -4459,7 +4494,7 @@ def _nested_scalar_stage_tendencies(
     species = tuple(advected_species) + tuple(
         name
         for name in NESTED_BOUNDARY_SCALAR_SPECIES
-        if name not in advected
+        if name not in advected and name not in inactive_species
     )
     merged: list[jax.Array] = []
     spec_zone = int(config.spec_zone)
@@ -4695,7 +4730,12 @@ def _rk_scan_step(
             # WRF's separate ``other_scalar_advance`` always transports the
             # represented Thompson QNI/QNR fields when flux advection is active;
             # option 0 means its ordinary (unlimited) stencil, not no transport.
-            number_scalars_advected = bool(namelist.use_flux_advection)
+            # Only the members the active microphysics predicts (none for WSM6).
+            number_species = _nested_number_species(namelist)
+            inactive_number_species = _nested_inactive_number_species(namelist)
+            number_scalars_advected = (
+                bool(namelist.use_flux_advection) and bool(number_species)
+            )
             moist_species = _advected_scalar_species(namelist) if moisture_advected else ()
             post_acoustic_scalar_transport = bool(
                 moisture_advected
@@ -4720,11 +4760,12 @@ def _rk_scan_step(
                         rk_step=int(stage.rk_step),
                         step_origin=rk1_reference,
                         transport_velocities=stage_velocities,
+                        species=number_species,
                     )
                 else:
                     number_tendencies = ()
                 advected_species = (
-                    ("Ni", "Nr") if number_scalars_advected else ()
+                    number_species if number_scalars_advected else ()
                 )
                 assert nested_frozen_scalar is not None
                 q_species, q_tendencies = _nested_scalar_stage_tendencies(
@@ -4733,6 +4774,7 @@ def _rk_scan_step(
                     nested_frozen_scalar,
                     namelist.boundary_config,
                     namelist.metrics.msfty,
+                    inactive_species=inactive_number_species,
                 )
         else:
             number_scalars_advected = False
@@ -4859,7 +4901,7 @@ def _rk_scan_step(
         if post_acoustic_scalar_transport:
             if nested_frozen_bundle:
                 advected_species = moist_species + (
-                    ("Ni", "Nr") if number_scalars_advected else ()
+                    number_species if number_scalars_advected else ()
                 )
                 limiter_stage = (
                     int(namelist.moist_adv_opt) in (1, 2)
@@ -4913,6 +4955,7 @@ def _rk_scan_step(
                             rk_step=int(stage.rk_step),
                             step_origin=rk1_reference,
                             transport_velocities=scalar_transport_velocities,
+                            species=number_species,
                         )
                         if number_scalars_advected
                         else ()
@@ -4925,6 +4968,7 @@ def _rk_scan_step(
                     nested_frozen_scalar,
                     namelist.boundary_config,
                     namelist.metrics.msfty,
+                    inactive_species=inactive_number_species,
                 )
             else:
                 q_tendencies = _moisture_coupled_tendencies(
