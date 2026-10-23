@@ -326,6 +326,11 @@ def _make_namelist(
     h_sca_adv_order: int = 5,
     moist_adv_opt: int = 0,
     scalar_adv_opt: int = 0,
+    mp_physics: int = 8,
+    bl_pbl_physics: int = 5,
+    sf_sfclay_physics: int = 5,
+    ra_lw_physics: int = 4,
+    ra_sw_physics: int = 4,
 ) -> OperationalNamelist:
     """Per-domain operational namelist (mirrors the v0.11.0 nesting proof config).
 
@@ -415,7 +420,20 @@ def _make_namelist(
             nested_ph_spec=True,
             nested_frozen_wrf_boundary_bundle=nested_frozen_bundle,
         )
-    namelist = dataclass_replace(namelist, cu_physics=int(cu_physics))
+    # Per-domain physics suite from namelist.input. Previously only cu_physics was
+    # bound, so every nest silently ran the OperationalNamelist defaults (mp=8
+    # Thompson even for mp_physics=6). Defaults equal those dataclass defaults, so
+    # a namelist that omits a key keeps the old behaviour; unsupported selections
+    # fail closed in _resolve_operational_suite.
+    namelist = dataclass_replace(
+        namelist,
+        cu_physics=int(cu_physics),
+        mp_physics=int(mp_physics),
+        bl_pbl_physics=int(bl_pbl_physics),
+        sf_sfclay_physics=int(sf_sfclay_physics),
+        ra_lw_physics=int(ra_lw_physics),
+        ra_sw_physics=int(ra_sw_physics),
+    )
     return namelist
 
 
@@ -680,6 +698,11 @@ def _load_domains(
             scalar_adv_opt=_domain_int(
                 run, "dynamics", "scalar_adv_opt", name, 0
             ),
+            mp_physics=_domain_physics_int(run, "mp_physics", name, 8),
+            bl_pbl_physics=_domain_physics_int(run, "bl_pbl_physics", name, 5),
+            sf_sfclay_physics=_domain_physics_int(run, "sf_sfclay_physics", name, 5),
+            ra_lw_physics=_domain_physics_int(run, "ra_lw_physics", name, 4),
+            ra_sw_physics=_domain_physics_int(run, "ra_sw_physics", name, 4),
         )
         if noahmp_land is not None:
             namelist = dataclass_replace(
