@@ -71,6 +71,15 @@ def test_diagnose_zi_convective_and_stable():
     assert 200 < zi < 500
 
 
+def test_diagnose_zi_stable_skips_clamped_surface_layer():
+    # θ held constant below the lowest WRF mass level (≈ 25 m), inversion above it
+    z = np.arange(5.0, 1000.0, 10.0)
+    th = 300.0 + 20.0 * (1 - np.exp(-np.maximum(z - 25.0, 0.0) / 100.0))
+    assert diagnose_zi(z, th, "stable", 0.014, 0.003) > 100          # not the clamped 5 m level
+    assert diagnose_zi(z, th, "stable", 0.014, 0.003, z_min=35.0) > 100
+    assert np.isinf(diagnose_zi(z, np.full_like(z, 300.0), "stable", 0.014, 0.003, z_min=35.0))
+
+
 def test_layout_rows_offset_and_levels():
     sim, p, _ = _make()
     cfg = p.cfg

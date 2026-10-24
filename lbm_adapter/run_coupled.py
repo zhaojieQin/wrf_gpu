@@ -76,6 +76,7 @@ def run_lbm_coupled(
     hfx_scale: float | None = None,
     t_offset: float = 0.0,
     cpm=None,
+    flux_corrector=None,
 ) -> CouplingStats:
     """双缓冲耦合主循环。
 
@@ -96,6 +97,8 @@ def run_lbm_coupled(
                  默认 0（旧行为）。
     cpm        : lbm_adapter.cpm.CPMPerturber | None  入流湍流的 cell perturbation；在每步推进前检查
                  是否到刷新时刻，到了就把扰动一次性加入分布函数。None（默认）不扰动。
+    flux_corrector : lbm_adapter.net_flux.NetFluxCorrector | None  每步在写入边界前把开放面的
+                 净体积通量修正为 0（均匀修正法向速度）。None（默认）不修正。
     para       : gpu.Parameter | None  与 sim 共享的 VF Parameter，仅 output_until_step 需要。
     output_until_step : int | None  此步算完后调用 para.set_timestep_out(0) 关闭 VTK 输出
                  （VF 每步重新读取 timestep_out）。None 表示不干预输出。
@@ -128,6 +131,10 @@ def run_lbm_coupled(
 
         # 2. 时间插值
         u, v, w, theta, hfx = db.interp(t_lbm)
+
+        # 2b. 净通量修正：开放面净体积通量置 0（防止质量累积 / 平均密度漂移）
+        if flux_corrector is not None:
+            u, v, w = flux_corrector.apply(u, v, w, t_lbm)
 
         # 3. 更新地表热通量 BC（仅换页时 hfx 变化，但每步更新代价可忽略）
         #    VF 存的是格子单位的运动学热通量：hfx_scale = dt / (dx·ρ·cp)，把 W/m² 换算过去。

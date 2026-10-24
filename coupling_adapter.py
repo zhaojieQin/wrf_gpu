@@ -436,6 +436,18 @@ try:
         else:
             print("[Rank 1] CPM: off", flush=True)
 
+        # ── 净通量修正：开放面净体积通量置 0 ─────────────────────────────
+        flux_corrector = None
+        if getattr(_cc, "LBM_NET_FLUX_CORRECTION", False):
+            from lbm_adapter.net_flux import NetFluxCorrector
+            flux_corrector = NetFluxCorrector(
+                bc_coords_lbm, lbm_cfg.dx,
+                lbm_cfg.domain_length_x, lbm_cfg.domain_length_y, lbm_cfg.domain_length_z,
+                diag_every_s=getattr(_cc, "LBM_NET_FLUX_DIAG_EVERY_S", 300.0),
+            )
+        else:
+            print("[Rank 1] net-flux correction: off", flush=True)
+
         # ── 主循环 ───────────────────────────────────────────────────────
         loop = WRFRecvLoop(
             comm=comm,
@@ -464,6 +476,7 @@ try:
             hfx_scale=hfx_scale,
             t_offset=lbm_t_offset,
             cpm=cpm,
+            flux_corrector=flux_corrector,
         )
 
         sim.finalize()

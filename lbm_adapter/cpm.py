@@ -87,8 +87,16 @@ def theta_pm_from_rim(theta_abs, u, v, dz: float, rim: float):
     return np.maximum(tpm, 0.0)
 
 
-def diagnose_zi(z, theta, regime: str, stable_dthdz: float, conv_min_dthdz: float) -> float:
-    """Boundary-layer height from a θ profile (2017 criteria). Returns np.inf if not found."""
+def diagnose_zi(z, theta, regime: str, stable_dthdz: float, conv_min_dthdz: float,
+                z_min: float | None = None) -> float:
+    """Boundary-layer height from a θ profile (2017 criteria). Returns np.inf if not found.
+
+    Stable: top of the surface inversion = first height, at or above ``z_min``, where
+    dθ/dz drops below ``stable_dthdz`` after having been above it. The search starts at
+    the inversion, not at the ground: the lowest LBM levels lie below the lowest WRF mass
+    level, where the boundary θ is held constant (dθ/dz = 0), which previously gave
+    z_i ≈ 5 m and switched every CPM cell off at night.
+    """
     z = np.asarray(z, dtype=np.float64)
     theta = np.asarray(theta, dtype=np.float64)
     ok = np.isfinite(theta)
@@ -97,8 +105,14 @@ def diagnose_zi(z, theta, regime: str, stable_dthdz: float, conv_min_dthdz: floa
         return np.inf
     dthdz = np.gradient(theta, z)
     if regime == "stable":
-        below = np.nonzero(dthdz < stable_dthdz)[0]
-        return float(z[below[0]]) if below.size else np.inf
+        start = 0 if z_min is None else int(np.searchsorted(z, float(z_min)))
+        g, zz = dthdz[start:], z[start:]
+        inversion = np.nonzero(g >= stable_dthdz)[0]
+        if not inversion.size:
+            return np.inf
+        k0 = int(inversion[0])
+        top = np.nonzero(g[k0:] < stable_dthdz)[0]
+        return float(zz[k0 + top[0]]) if top.size else np.inf
     k = int(np.argmax(dthdz))
     return float(z[k]) if dthdz[k] >= conv_min_dthdz else np.inf
 
@@ -313,7 +327,10 @@ class CPMPerturber:
         regime = "stable" if (hfx is not None and np.size(hfx) and float(np.mean(hfx)) < 0.0) else "convective"
         levels = np.arange(1, self.nk)
         zl = self._zk(levels)
-        zi = diagnose_zi(zl, th[levels], regime, c.stable_dthdz, c.conv_min_dthdz)
+        # stable z_i is searched from the lowest perturbed level up (skips the clamped
+        # sub-WRF-level layer near the ground)
+        zi = diagnose_zi(zl, th[levels], regime, c.stable_dthdz, c.conv_min_dthdz,
+                         z_min=float(self._zk(self.k_min)))
         z_cp = min(c.zi_fraction * zi, c.z_max_m)
 
         speed = np.hypot(up, vp)

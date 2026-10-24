@@ -74,6 +74,13 @@ VALIDATION_WRF_FOOTPRINT_EVERY_S = 60.0  # WRF mean profile over the LBM footpri
 #   "freestream" — per-node inflow/outflow switching (FreestreamInterpolatedCompressible)
 LBM_BC_MODE = "velocity"
 
+# Net-flux correction (lbm_adapter/net_flux.py): every step the WRF boundary velocities are
+# corrected by a uniform normal velocity so the net volume flux through the five open faces is
+# zero. Without it the domain gains mass (mean ρ drifts up) and the imbalance drives spurious
+# convergence / sinking near the inflow faces.
+LBM_NET_FLUX_CORRECTION = True
+LBM_NET_FLUX_DIAG_EVERY_S = 300.0   # print Q / correction every N s of LBM time; None → silent
+
 # LBM temperature field (diurnal cycle), set up as VF apps/gpu/StratifiedBoundaryLayer:
 #   - temperature as advection-diffusion scalar θ − θ_ref (F16 kernel), Pr = 0.7
 #   - buoyancy from the deviation to the horizontal planar average
