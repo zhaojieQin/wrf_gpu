@@ -214,13 +214,16 @@ class CPMPerturber:
         self.cell_table = table
 
     def _classify(self, coords):
+        # VF reports the fluid node next to each face (x = dx/2, lx − dx/2, ...), not a node
+        # outside the domain, so a face is "within one cell of the boundary". Edge entries may
+        # fall into two faces; that only affects the face averages, which is harmless.
         x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
         k = np.rint((z - self.z0) / self.dx).astype(np.int64)
+        dx = self.dx
         lateral = z <= self.lz
         return {
-            "MX": lateral & (x < 0.0), "PX": lateral & (x > self.lx),
-            "MY": lateral & (y < 0.0) & (x >= 0.0) & (x <= self.lx),
-            "PY": lateral & (y > self.ly) & (x >= 0.0) & (x <= self.lx),
+            "MX": lateral & (x < dx), "PX": lateral & (x > self.lx - dx),
+            "MY": lateral & (y < dx), "PY": lateral & (y > self.ly - dx),
         }, k
 
     def _build_face_groups(self, bc_coords, ad_coords) -> None:

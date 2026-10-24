@@ -7,21 +7,31 @@ LX, LY, LZ = 100.0, 80.0, 50.0
 
 
 def _bc_coords():
-    """Open-face nodes half a cell outside [0, L] (lateral faces + roof, no edges)."""
+    """VF-style entries: fluid nodes next to each face, blocks MX, PX, MY, PY, PZ; edge and
+    corner nodes appear once per face they touch."""
     xs = -0.5 * DX + DX * np.arange(1, int(LX / DX) + 1)
     ys = -0.5 * DX + DX * np.arange(1, int(LY / DX) + 1)
     zs = -0.5 * DX + DX * np.arange(1, int(LZ / DX) + 1)
-    pts = []
-    for x in (-0.5 * DX, LX + 0.5 * DX):
+    pts, labels = [], []
+    for f, x in ((0, xs[0]), (1, xs[-1])):
         pts += [(x, y, z) for y in ys for z in zs]
-    for y in (-0.5 * DX, LY + 0.5 * DX):
+        labels += [f] * (len(ys) * len(zs))
+    for f, y in ((2, ys[0]), (3, ys[-1])):
         pts += [(x, y, z) for x in xs for z in zs]
-    pts += [(x, y, LZ + 0.5 * DX) for x in xs for y in ys]
-    return np.asarray(pts)
+        labels += [f] * (len(xs) * len(zs))
+    pts += [(x, y, zs[-1]) for x in xs for y in ys]
+    labels += [4] * (len(xs) * len(ys))
+    return np.asarray(pts), np.asarray(labels)
+
+
+def test_faces_assigned_per_block_with_duplicated_edges():
+    c, labels = _bc_coords()
+    corr = NetFluxCorrector(c, DX, LX, LY, LZ, diag_every_s=None)
+    assert np.array_equal(corr.face, labels)
 
 
 def test_net_flux_removed_and_tangential_kept():
-    c = _bc_coords()
+    c, _ = _bc_coords()
     corr = NetFluxCorrector(c, DX, LX, LY, LZ, diag_every_s=None)
     rng = np.random.default_rng(0)
     u = 5.0 + rng.normal(size=len(c))
@@ -38,7 +48,7 @@ def test_net_flux_removed_and_tangential_kept():
 
 
 def test_balanced_field_unchanged():
-    c = _bc_coords()
+    c, _ = _bc_coords()
     corr = NetFluxCorrector(c, DX, LX, LY, LZ, diag_every_s=None)
     u = np.full(len(c), 4.0)
     v = np.full(len(c), -1.0)

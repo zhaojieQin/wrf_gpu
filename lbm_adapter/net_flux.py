@@ -29,8 +29,10 @@ class NetFluxCorrector:
 
     Parameters
     ----------
-    bc_coords : (n_bc, 3) open-boundary velocity nodes in LBM coordinates (m), in the order of
-                ``db.interp`` u/v/w. Boundary nodes sit half a cell outside [0, L].
+    bc_coords : (n_bc, 3) open-boundary velocity entries in LBM coordinates (m), in the order of
+                ``db.interp`` u/v/w. VF reports the fluid node next to each face (x = dx/2,
+                lx − dx/2, ..., z = lz − dx/2); edge/corner nodes appear once per face they touch
+                (same coordinates, consecutive face blocks MX, PX, MY, PY, PZ).
     dx        : LBM grid spacing (m); every node represents a face area dx².
     lx, ly, lz: LBM domain lengths (m).
     diag_every_s : print interval of the flux diagnostics (s of LBM time); None → silent.
@@ -39,11 +41,29 @@ class NetFluxCorrector:
     def __init__(self, bc_coords: np.ndarray, dx: float, lx: float, ly: float, lz: float,
                  diag_every_s: float | None = 300.0):
         c = np.asarray(bc_coords, dtype=np.float64)
+        n = c.shape[0]
         x, y, z = c[:, 0], c[:, 1], c[:, 2]
-        # one face per node; lateral faces take precedence over the roof at the top edges
-        face = np.select([x < 0.0, x > lx, y < 0.0, y > ly, z > lz], [0, 1, 2, 3, 4], -1)
-        if np.any(face < 0):
-            raise ValueError(f"NetFluxCorrector: {int(np.sum(face < 0))} BC nodes are not on an open face")
+        # candidate faces of every entry: within one cell of the face (works for nodes just
+        # inside, x = dx/2, as VF reports them, and for nodes just outside, x = -dx/2)
+        cand = np.stack([x < dx, x > lx - dx, y < dx, y > ly - dx, z > lz - dx], axis=1)
+        n_cand = cand.sum(axis=1)
+        if np.any(n_cand == 0):
+            raise ValueError(f"NetFluxCorrector: {int(np.sum(n_cand == 0))} BC entries are not "
+                             "within one cell of an open face")
+        # Edge/corner nodes appear once per face (same coordinates); the k-th occurrence of a
+        # coordinate gets its k-th candidate face (VF registers the faces in the order
+        # MX, PX, MY, PY, PZ, the candidate order above).
+        key = np.round(c / (0.5 * dx)).astype(np.int64)
+        _, inv = np.unique(key, axis=0, return_inverse=True)
+        inv = np.asarray(inv).ravel()
+        order = np.argsort(inv, kind="stable")
+        sorted_inv = inv[order]
+        starts = np.r_[0, np.flatnonzero(np.diff(sorted_inv)) + 1]
+        group_start = np.repeat(starts, np.diff(np.r_[starts, n]))
+        rank = np.empty(n, dtype=np.int64)
+        rank[order] = np.arange(n) - group_start
+        pick = np.minimum(rank, n_cand - 1) + 1                      # 1-based candidate index
+        face = np.argmax(np.cumsum(cand, axis=1) == pick[:, None], axis=1)
         self.face = face
         self.nx, self.ny, self.nz = (_NORMALS[face, k] for k in range(3))
         self.area = float(dx) * float(dx)
