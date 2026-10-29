@@ -141,6 +141,8 @@ class WRFRecvLoop:
     ad_coords  : (n_ad, 3)  温度 Dirichlet 边界节点坐标（WRF 参考系 x/y，z 为 AGL），或 None。
     on_frame   : callable(received: dict) | None，每收到一帧原始数据就调用一次
                  （如 validation.WRFTowerSampler，记录 WRF 测风塔廓线）；None 不调用。
+    on_advance : callable(received: dict) | None，新帧真正进入双缓冲（换页）后调用，顺序与
+                 db.t0/db.t1 一致（如 relaxation.RelaxationZone.push_frame）；乱序/重复帧不调用。
     eof_received : bool  是否已收到 EOF（内部状态，不要手动设置）
     """
     comm: object
@@ -153,6 +155,7 @@ class WRFRecvLoop:
     barrier_after_meta: bool = True
     ad_coords: np.ndarray | None = None
     on_frame: object | None = None
+    on_advance: object | None = None
     eof_received: bool = field(default=False, init=False)
 
     def maybe_advance(self, t_lbm_s: float, db: WRFDoubleBuffer) -> bool:
@@ -205,6 +208,8 @@ class WRFRecvLoop:
 
         db.advance(new_frame)
         self.next_step += 1
+        if self.on_advance is not None:
+            self.on_advance(raw)
 
         # 诊断：每 30 帧（约 1 分钟）打印一次温度边界与地面热通量统计（只打印）
         if self.ad_coords is not None and new_frame.theta_ad is not None and self.next_step % 30 == 0:

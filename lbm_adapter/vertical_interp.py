@@ -716,8 +716,12 @@ def build_lbm_grid_table(
     z_agl: np.ndarray,
     most_fields: MOSTSurfaceFields | None = None,
     fields: tuple[str, ...] = ("u", "v", "w"),
+    source: "_ColumnSource | None" = None,
 ) -> tuple[np.ndarray, ...]:
     """Fields on a tensor-product LBM grid, shape (ny_l, nx_l, nz_l), float32.
+
+    ``source`` (optional) is a pre-built ``_ColumnSource`` for the same frame, so several
+    tables of one frame (e.g. the relaxation-zone strips) share the column preprocessing.
 
     ``fields`` selects any of "u", "v", "w", "theta" (default u, v, w); tables are
     returned in that order.
@@ -732,7 +736,7 @@ def build_lbm_grid_table(
     y_wrf : (ny_l,) m  LBM grid y positions in WRF coords
     z_agl : (nz_l,) m  LBM grid heights above ground
     """
-    src = _ColumnSource(wrf_data, most_fields)
+    src = source if source is not None else _ColumnSource(wrf_data, most_fields)
     x_wrf = np.asarray(x_wrf, dtype=np.float64)
     y_wrf = np.asarray(y_wrf, dtype=np.float64)
     z_agl = np.asarray(z_agl, dtype=np.float64)

@@ -83,6 +83,19 @@ LBM_BC_MODE = "velocity"
 LBM_NET_FLUX_CORRECTION = True
 LBM_NET_FLUX_DIAG_EVERY_S = 300.0   # print Q / correction every N s of LBM time; None → silent
 
+# Lateral relaxation zone (lbm_adapter/relaxation.py, VF BoundaryRelaxationZone): within
+# LBM_RELAX_WIDTH_NODES cells of the lateral faces u, v, w and θ are nudged towards WRF each step,
+# du/dt = cos²(π d / 2W) / τ · (u_WRF − u), so both inflow streams reach the WRF state before they meet
+# (removes the corner front between west- and south-face inflow). The CPM cells move inside the zone
+# (first CPM row at max(LBM_CPM_OFFSET_NODES, LBM_RELAX_WIDTH_NODES)). Needs the rebuilt VF bindings.
+LBM_RELAX_ENABLE = True
+LBM_RELAX_WIDTH_NODES = 20               # zone width in grid cells (20 × 10 m = 200 m)
+LBM_RELAX_TAU_S = 20.0                   # relaxation time at the face (s); dt/τ = 0.004 with dt = 0.08 s
+LBM_RELAX_VELOCITY = True                # nudge u, v, w (body force)
+LBM_RELAX_TEMPERATURE = True             # nudge θ (advection-diffusion distributions)
+LBM_RELAX_FACES = ("MX", "PX", "MY", "PY")   # add "PZ" with LBM_RELAX_TOP_WIDTH_NODES > 0 for a roof zone
+LBM_RELAX_TOP_WIDTH_NODES = 0
+
 # LBM temperature field (diurnal cycle), set up as VF apps/gpu/StratifiedBoundaryLayer:
 #   - temperature as advection-diffusion scalar θ − θ_ref (F16 kernel), Pr = 0.7
 #   - buoyancy from the deviation to the horizontal planar average
@@ -109,7 +122,7 @@ LBM_AD_DIRICHLET_BC = "antibounceback"
 LBM_CPM_ENABLE = True
 LBM_CPM_CELL_NODES = 8           # cell side (grid nodes); 8 ≈ 83 m at dx = 10.4 m
 LBM_CPM_ROWS = 3                 # rows of cells along each lateral face
-LBM_CPM_OFFSET_NODES = 3         # first row starts this many nodes inside the boundary (no relaxation zone)
+LBM_CPM_OFFSET_NODES = 3         # first row this many nodes inside the boundary; raised to LBM_RELAX_WIDTH_NODES when the relaxation zone is on
 LBM_CPM_SKIP_LEVELS = 3          # lowest fluid levels left unperturbed (2017)
 LBM_CPM_Z_MAX_M = 600.0          # m AGL, highest perturbed level (also kept 2 dx below the domain top)
 LBM_CPM_ZI_FRACTION = 2.0 / 3.0  # z_CP = fraction · z_i

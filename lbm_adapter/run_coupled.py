@@ -77,6 +77,7 @@ def run_lbm_coupled(
     t_offset: float = 0.0,
     cpm=None,
     flux_corrector=None,
+    relaxation=None,
 ) -> CouplingStats:
     """双缓冲耦合主循环。
 
@@ -99,6 +100,8 @@ def run_lbm_coupled(
                  是否到刷新时刻，到了就把扰动一次性加入分布函数。None（默认）不扰动。
     flux_corrector : lbm_adapter.net_flux.NetFluxCorrector | None  每步在写入边界前把开放面的
                  净体积通量修正为 0（均匀修正法向速度）。None（默认）不修正。
+    relaxation : lbm_adapter.relaxation.RelaxationZone | None  侧边界松弛区：每步推进前把条带内的
+                 速度/θ 向 WRF（两帧时间插值）松弛。目标帧由 recv_loop.on_advance 推送。None 不松弛。
     para       : gpu.Parameter | None  与 sim 共享的 VF Parameter，仅 output_until_step 需要。
     output_until_step : int | None  此步算完后调用 para.set_timestep_out(0) 关闭 VTK 输出
                  （VF 每步重新读取 timestep_out）。None 表示不干预输出。
@@ -153,6 +156,10 @@ def run_lbm_coupled(
         # 4b. CPM：到刷新时刻时，用当前边界风/θ 生成扰动并一次性加入分布函数
         if cpm is not None:
             cpm.maybe_refresh(t_lbm, u, v, theta_ad=theta_ad, hfx=hfx)
+
+        # 4c. 侧边界松弛区（body force + θ 分布增量，下一次碰撞生效）
+        if relaxation is not None:
+            relaxation.apply(t_lbm, db)
 
         # 4. 推进一步
         sim.calculate_timestep(lbm_step)

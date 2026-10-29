@@ -414,7 +414,10 @@ try:
             from lbm_adapter.cpm import CPMConfig, CPMPerturber
             cpm_cfg = CPMConfig(
                 cell_nodes=_cc.LBM_CPM_CELL_NODES, rows=_cc.LBM_CPM_ROWS,
-                offset_nodes=_cc.LBM_CPM_OFFSET_NODES, skip_levels=_cc.LBM_CPM_SKIP_LEVELS,
+                # CPM cells start just inside the relaxation zone (Muñoz-Esparza et al. 2014/2017)
+                offset_nodes=(max(_cc.LBM_CPM_OFFSET_NODES, _cc.LBM_RELAX_WIDTH_NODES)
+                              if getattr(_cc, "LBM_RELAX_ENABLE", False) else _cc.LBM_CPM_OFFSET_NODES),
+                skip_levels=_cc.LBM_CPM_SKIP_LEVELS,
                 z_max_m=_cc.LBM_CPM_Z_MAX_M, zi_fraction=_cc.LBM_CPM_ZI_FRACTION,
                 stable_dthdz=_cc.LBM_CPM_STABLE_DTHDZ, conv_min_dthdz=_cc.LBM_CPM_CONV_MIN_DTHDZ,
                 ec=_cc.LBM_CPM_EC, cp=_cc.LBM_CPM_CP, gamma=_cc.LBM_CPM_GAMMA,
@@ -435,6 +438,29 @@ try:
             )
         else:
             print("[Rank 1] CPM: off", flush=True)
+
+        # ── 侧边界松弛区：条带内速度/θ 向 WRF 松弛，目标帧随换页推送 ───────
+        relax = None
+        if getattr(_cc, "LBM_RELAX_ENABLE", False):
+            from lbm_adapter.relaxation import RelaxationConfig, RelaxationZone
+            relax = RelaxationZone(
+                sim,
+                RelaxationConfig(
+                    width_nodes=_cc.LBM_RELAX_WIDTH_NODES, tau_s=_cc.LBM_RELAX_TAU_S,
+                    relax_velocity=_cc.LBM_RELAX_VELOCITY,
+                    relax_temperature=_cc.LBM_RELAX_TEMPERATURE and LBM_THERMAL,
+                    faces=tuple(_cc.LBM_RELAX_FACES), top_width_nodes=_cc.LBM_RELAX_TOP_WIDTH_NODES,
+                ),
+                dx=lbm_cfg.dx, lx=lbm_cfg.domain_length_x, ly=lbm_cfg.domain_length_y,
+                lz=lbm_cfg.domain_length_z, dt_lbm=lbm_cfg.dt, static_ctx=static_ctx,
+                origin_xy=(lbm_origin_x, lbm_origin_y), theta_ref=ref.theta_ref,
+                velocity_ratio=lbm_cfg.velocity_ratio,
+            )
+            # the two frames already in the double buffer (t0, t1), in order
+            relax.push_frame(received_step0)
+            relax.push_frame(received_step1)
+        else:
+            print("[Rank 1] relaxation zone: off", flush=True)
 
         # ── 净通量修正：开放面净体积通量置 0 ─────────────────────────────
         flux_corrector = None
@@ -459,6 +485,7 @@ try:
             sl_coords=sl_coords_wrf,
             ad_coords=ad_coords_wrf,
             on_frame=wrf_tower,
+            on_advance=(relax.push_frame if relax is not None else None),
         )
 
         print(f"[Rank 1] Entering main loop: n_steps={lbm_cfg.n_steps}", flush=True)
@@ -477,6 +504,7 @@ try:
             t_offset=lbm_t_offset,
             cpm=cpm,
             flux_corrector=flux_corrector,
+            relaxation=relax,
         )
 
         sim.finalize()

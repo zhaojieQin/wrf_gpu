@@ -245,7 +245,8 @@ class ThermalConfig:
     gravity: float = 9.81
     # 开放面温度 Dirichlet 格式："interpolated"（DirichletInterpolatedSlip，用子网格距离 q，
     # 对应速度的 VelocityInterpolatedCompressible）或 "antibounceback"（DirichletAntiBounceBackSlip）
-    dirichlet_bc: str = "interpolated"
+    # "interpolated" is not consistent in VF (uniform field at rest → θ/3 for q = 0.5); keep "antibounceback"
+    dirichlet_bc: str = "antibounceback"
 
 
 # ---------------------------------------------------------------------------
