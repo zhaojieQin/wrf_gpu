@@ -39,7 +39,9 @@ LBM_DX = 10.0
 # lattice Mach √3·U·dt/dx ≈ 0.31 at 15 m/s, 0.41 at 20 m/s). The night low-level jet and the winds
 # near 1.6 km can exceed 15 m/s; if [lbm_init] warns about Mach > 0.3, set e.g. 0.06 s
 # (Mach ≈ 0.21 at 20 m/s, twice the LBM steps).
-LBM_DT_S = None
+# 2026-10-29: 0.08 s — the 13–24 LST run reached lattice Mach 0.294 in the night jet (dt ≈ 0.119 s);
+# with 0.08 s: Mach ≈ 0.19 at 14 m/s, 0.24 at 17 m/s (≈1.5× the LBM steps).
+LBM_DT_S = 0.08
 
 # LBM full-field VTK output (~1-2 GB per output, ≈21.9M nodes). Off by default.
 # When on: write every LBM_OUTPUT_EVERY_STEPS steps, LBM_OUTPUT_COUNT times, then stop.
@@ -94,9 +96,11 @@ LBM_THERMAL = True
 LBM_THETA_REF = None
 LBM_RHO_CP = 1.225 * 1004.5    # J m^-3 K^-1, converts HFX [W/m^2] to kinematic flux [K m/s]
 # Temperature Dirichlet scheme on the five open faces:
-#   "interpolated"   → DirichletInterpolatedSlip (uses subgrid distance q, analogous to VelocityInterpolatedCompressible)
-#   "antibounceback" → DirichletAntiBounceBackSlip (previous behaviour)
-LBM_AD_DIRICHLET_BC = "interpolated"
+#   "antibounceback" → DirichletAntiBounceBackSlip: −g_i + 2 g_eq(θ_wall); exact for the planar faces (q = 0.5)
+#   "interpolated"   → DirichletInterpolatedSlip — DO NOT USE: VF's interpolated anti-bounce-back reuses the
+#                      bounce-back interpolation (q·(g_i + g_ī)), so a uniform field at rest comes back as θ/3 for
+#                      q = 0.5. In the 2026-10-29 run the boundary θ anomaly was ≈ 0.5 × WRF at all heights.
+LBM_AD_DIRICHLET_BC = "antibounceback"
 
 # Cell perturbation method (CPM) for inflow turbulence (needs LBM_THERMAL).
 # Muñoz-Esparza et al. 2015 (PoF), 2017 (JAMES), Muñoz-Esparza & Kosović 2018 (MWR); see lbm_adapter/cpm.py.
@@ -118,9 +122,9 @@ LBM_CPM_TP_MIN_S = 5.0           # s, clamp for t_p
 LBM_CPM_TP_MAX_S = 300.0         # s
 LBM_CPM_U0 = 0.5                 # m/s, w_in = ½[1 − tanh(u_n / u0)]
 LBM_CPM_ANGLE_MAX_DEG = None     # deg; e.g. 70 → no perturbation if wind vs inward normal exceeds it. None: off
-LBM_CPM_STABLE_SCHEME = "ec"     # stable regime amplitude: "ec" or "rim" (2018, Ri_m scaling)
+LBM_CPM_STABLE_SCHEME = "rim"    # stable regime amplitude: "ec" or "rim" (2018, Ri_m scaling); 2026-10-29: rim for the night SBL
 LBM_CPM_RIM = -1.0               # Ri_m for LBM_CPM_STABLE_SCHEME = "rim"
 LBM_CPM_THETA_PM_MAX = 2.0       # K, safety cap on the perturbation amplitude
-LBM_CPM_MOMENTUM = False         # also perturb u, v in the same cells (no literature optimum)
+LBM_CPM_MOMENTUM = True          # also perturb u, v in the same cells (no literature optimum); 2026-10-29: on, first use
 LBM_CPM_MOMENTUM_ALPHA = 0.05    # u', v' amplitude as a fraction of the local wind speed
 LBM_CPM_SEED = 12345             # RNG seed (reproducible perturbations)
