@@ -243,10 +243,12 @@ class ThermalConfig:
     turbulence_model_ad: str = "AMDStratified"
     sgs_constant: float = 0.2
     gravity: float = 9.81
-    # 开放面温度 Dirichlet 格式："interpolated"（DirichletInterpolatedSlip，用子网格距离 q，
-    # 对应速度的 VelocityInterpolatedCompressible）或 "antibounceback"（DirichletAntiBounceBackSlip）
-    # "interpolated" is not consistent in VF (uniform field at rest → θ/3 for q = 0.5); keep "antibounceback"
-    dirichlet_bc: str = "antibounceback"
+    # 开放面温度 Dirichlet 格式：
+    #   "consistent"     → DirichletInterpolatedConsistentSlip（插值 anti-bounce-back，壁面项只取平衡态偶数部分；
+    #                      均匀流中保持均匀 θ，与 θ_ref 无关；q = 0.5 时即正确的 anti-bounce-back）
+    #   "interpolated"   → DirichletInterpolatedSlip：VF 原格式，系数不配平（q = 0.5 时均匀静止场 → θ/3）
+    #   "antibounceback" → DirichletAntiBounceBackSlip：VF 原格式，壁面项含线性项 3c·u，流速不为零时有误差
+    dirichlet_bc: str = "consistent"
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +383,7 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
             gpu.StressBC.StressBounceBackCompressible, gpu.SurfaceLayerBC.SurfaceHeatFlux)
         # Slip variant uses the local fluid velocity at the node (open boundary, not a wall)
         ad_dirichlet_types = {
+            "consistent": gpu.AdvectionDiffusionDirichletBC.DirichletInterpolatedConsistentSlip,
             "interpolated": gpu.AdvectionDiffusionDirichletBC.DirichletInterpolatedSlip,
             "antibounceback": gpu.AdvectionDiffusionDirichletBC.DirichletAntiBounceBackSlip,
         }

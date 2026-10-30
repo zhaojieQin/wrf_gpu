@@ -109,11 +109,14 @@ LBM_THERMAL = True
 LBM_THETA_REF = None
 LBM_RHO_CP = 1.225 * 1004.5    # J m^-3 K^-1, converts HFX [W/m^2] to kinematic flux [K m/s]
 # Temperature Dirichlet scheme on the five open faces:
-#   "antibounceback" → DirichletAntiBounceBackSlip: −g_i + 2 g_eq(θ_wall); exact for the planar faces (q = 0.5)
-#   "interpolated"   → DirichletInterpolatedSlip — DO NOT USE: VF's interpolated anti-bounce-back reuses the
-#                      bounce-back interpolation (q·(g_i + g_ī)), so a uniform field at rest comes back as θ/3 for
-#                      q = 0.5. In the 2026-10-29 run the boundary θ anomaly was ≈ 0.5 × WRF at all heights.
-LBM_AD_DIRICHLET_BC = "antibounceback"
+#   "consistent"     → DirichletInterpolatedConsistentSlip (added to VF 2026-10-30): interpolated anti-bounce-back
+#                      −g_i/(2q) + (2q−1)/(2q)·g_ī + e_i⁺(θ_wall)/q with the even equilibrium part only; a uniform θ in a
+#                      uniform flow stays uniform and the result does not depend on θ_ref. Needs the rebuilt VF.
+#   "antibounceback" → DirichletAntiBounceBackSlip: −g_i + 2 g_eq(θ_wall) with the FULL equilibrium (3c·u term):
+#                      error 6 w θ (c·u) per population at the open faces (u ≠ 0), depends on θ_ref. Diverged ~80 s.
+#   "interpolated"   → DirichletInterpolatedSlip: coefficients do not balance, a uniform field at rest comes back as
+#                      θ/3 for q = 0.5. Stable, but the boundary θ anomaly was ≈ 0.5 × WRF (2026-10-29 run).
+LBM_AD_DIRICHLET_BC = "consistent"
 
 # Cell perturbation method (CPM) for inflow turbulence (needs LBM_THERMAL).
 # Muñoz-Esparza et al. 2015 (PoF), 2017 (JAMES), Muñoz-Esparza & Kosović 2018 (MWR); see lbm_adapter/cpm.py.
