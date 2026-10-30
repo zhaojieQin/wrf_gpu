@@ -246,6 +246,8 @@ class ThermalConfig:
     # 开放面温度 Dirichlet 格式：
     #   "consistent"     → DirichletInterpolatedConsistentSlip（插值 anti-bounce-back，壁面项只取平衡态偶数部分；
     #                      均匀流中保持均匀 θ，与 θ_ref 无关；q = 0.5 时即正确的 anti-bounce-back）
+    #   "consistent_inflow" → DirichletInterpolatedConsistentInflowSlip：同 "consistent"，但出流节点（u·n > 0）
+    #                      用节点自身 θ（零梯度），WRF θ 只在入流节点施加，避免出流面/顶面强加 θ 造成的尖锐界面
     #   "interpolated"   → DirichletInterpolatedSlip：VF 原格式，系数不配平（q = 0.5 时均匀静止场 → θ/3）
     #   "antibounceback" → DirichletAntiBounceBackSlip：VF 原格式，壁面项含线性项 3c·u，流速不为零时有误差
     dirichlet_bc: str = "consistent"
@@ -384,6 +386,7 @@ def setup_vf_simulation(cfg: WRFLBMConfig, communicator=None,
         # Slip variant uses the local fluid velocity at the node (open boundary, not a wall)
         ad_dirichlet_types = {
             "consistent": gpu.AdvectionDiffusionDirichletBC.DirichletInterpolatedConsistentSlip,
+            "consistent_inflow": gpu.AdvectionDiffusionDirichletBC.DirichletInterpolatedConsistentInflowSlip,
             "interpolated": gpu.AdvectionDiffusionDirichletBC.DirichletInterpolatedSlip,
             "antibounceback": gpu.AdvectionDiffusionDirichletBC.DirichletAntiBounceBackSlip,
         }
